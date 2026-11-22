@@ -1,8 +1,9 @@
 use crate::analyzer::{analyze_path, report_exceeds_threshold, Diagnostic, FailThreshold};
-use crate::physics::{evaluate_payload, get_profile, PayloadBudgetReport};
+use crate::license::require_pro;
+use crate::physics::{evaluate_payload, resolve_profile, PayloadBudgetReport};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 
@@ -46,8 +47,15 @@ pub struct CheckSummary {
     pub profile: String,
     pub fail_on: String,
     pub total_diagnostics: usize,
+    pub suppressed_by_baseline: usize,
     pub diagnostics: Vec<Diagnostic>,
     pub payload_results: Vec<PayloadCheckResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BaselineFile {
+    #[serde(default)]
+    diagnostics: Vec<Diagnostic>,
 }
 
 fn default_hz() -> f64 {
@@ -60,17 +68,45 @@ fn default_paths() -> Vec<String> {
     vec![".".to_string()]
 }
 
+#[allow(dead_code)]
 pub fn run_budget_file(config_path: &Path) -> Result<CheckSummary, String> {
-    let raw = fs::read_to_string(config_path)
-        .map_err(|e| format!("Failed to read {}: {e}", config_path.display()))?;
-    evaluate_budget_toml(&raw)
+    run_budget_file_with_options(config_path, None, None)
 }
 
+pub fn run_budget_file_with_options(
+    config_path: &Path,
+    custom_profiles: Option<&Path>,
+    baseline_path: Option<&Path>,
+) -> Result<CheckSummary, String> {
+    let baseline_diags = if let Some(bpath) = baseline_path {
+        require_pro("CI Regression Baseline (--baseline)")?;
+        let braw = fs::read_to_string(bpath)
+            .map_err(|e| format!("Failed to read baseline {}: {e}", bpath.display()))?;
+        let parsed: BaselineFile = serde_json::from_str(&braw)
+            .map_err(|e| format!("Invalid baseline JSON {}: {e}", bpath.display()))?;
+        Some(parsed.diagnostics)
+    } else {
+        None
+    };
+
+    let raw = fs::read_to_string(config_path)
+        .map_err(|e| format!("Failed to read {}: {e}", config_path.display()))?;
+    evaluate_budget_toml_with_options(&raw, custom_profiles, baseline_diags.as_deref())
+}
+
+#[allow(dead_code)]
 pub fn evaluate_budget_toml(raw_toml: &str) -> Result<CheckSummary, String> {
+    evaluate_budget_toml_with_options(raw_toml, None, None)
+}
+
+pub fn evaluate_budget_toml_with_options(
+    raw_toml: &str,
+    custom_profiles: Option<&Path>,
+    baseline_diags: Option<&[Diagnostic]>,
+) -> Result<CheckSummary, String> {
     let cfg: BudgetConfig =
         toml::from_str(raw_toml).map_err(|e| format!("Invalid budgets.toml: {e}"))?;
-    let profile = get_profile(&cfg.profile)
-        .ok_or_else(|| format!("Unknown profile '{}' in budgets.toml", cfg.profile))?;
+    let profile = resolve_profile(&cfg.profile, custom_profiles)?;
     let threshold = FailThreshold::from_str(&cfg.fail_on)
         .ok_or_else(|| format!("Invalid fail_on '{}'", cfg.fail_on))?;
 
@@ -79,6 +115,11 @@ pub fn evaluate_budget_toml(raw_toml: &str) -> Result<CheckSummary, String> {
         let rep = analyze_path(Path::new(p), &profile, cfg.assumed_hz)?;
         all_diags.extend(rep.diagnostics);
     }
+
+    let (all_diags, suppressed_by_baseline) = match baseline_diags {
+        Some(base) => filter_against_baseline(all_diags, base),
+        None => (all_diags, 0),
+    };
 
     let mut payload_results = Vec::new();
     for rule in &cfg.payload_checks {
@@ -112,9 +153,43 @@ pub fn evaluate_budget_toml(raw_toml: &str) -> Result<CheckSummary, String> {
         profile: cfg.profile,
         fail_on: cfg.fail_on,
         total_diagnostics: all_diags.len(),
+        suppressed_by_baseline,
         diagnostics: all_diags,
         payload_results,
     })
+}
+
+fn baseline_key(d: &Diagnostic) -> (String, String, String) {
+    (
+        normalize_sarif_uri(&d.file),
+        d.rule_id.clone(),
+        d.snippet.clone(),
+    )
+}
+
+pub fn filter_against_baseline(
+    current: Vec<Diagnostic>,
+    baseline: &[Diagnostic],
+) -> (Vec<Diagnostic>, usize) {
+    let mut counts: HashMap<(String, String, String), usize> = HashMap::new();
+    for b in baseline {
+        *counts.entry(baseline_key(b)).or_insert(0) += 1;
+    }
+
+    let mut regressions = Vec::new();
+    let mut suppressed = 0;
+    for d in current {
+        let key = baseline_key(&d);
+        if let Some(c) = counts.get_mut(&key) {
+            if *c > 0 {
+                *c -= 1;
+                suppressed += 1;
+                continue;
+            }
+        }
+        regressions.push(d);
+    }
+    (regressions, suppressed)
 }
 
 fn sarif_level(severity: &str) -> &'static str {
@@ -328,5 +403,33 @@ require_single_mtu = true
             results[1]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
             "firmware/node.cpp"
         );
+    }
+
+    #[test]
+    fn baseline_suppresses_shifted_legacy_findings_and_catches_new_regressions() {
+        let legacy = Diagnostic {
+            rule_id: "JSON_IN_LOOP".into(),
+            severity: "critical".into(),
+            file: r".\src\app.py".into(),
+            line: 10,
+            column: 5,
+            snippet: "json.dumps(x)".into(),
+            explanation: "Legacy".into(),
+            physics_law: "Shannon".into(),
+            recommended_fix: "Pack".into(),
+            budget: None,
+        };
+        let mut shifted = legacy.clone();
+        shifted.file = "src/app.py".into();
+        shifted.line = 18; // shifted down by 8 lines
+
+        let mut new_regression = legacy.clone();
+        new_regression.snippet = "json.dumps(y)".into();
+        new_regression.line = 42;
+
+        let (kept, suppressed) = filter_against_baseline(vec![shifted, new_regression], &[legacy]);
+        assert_eq!(suppressed, 1);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].snippet, "json.dumps(y)");
     }
 }

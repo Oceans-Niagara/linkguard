@@ -1,5 +1,5 @@
 use crate::analyzer::{analyze_path, analyze_source, Lang};
-use crate::physics::{builtin_profiles, evaluate_payload, get_profile};
+use crate::physics::{all_profiles, builtin_profiles, evaluate_payload, resolve_profile};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -56,7 +56,7 @@ pub fn run_mcp_stdio() -> Result<(), String> {
                     "tools": [
                         {
                             "name": "list_link_profiles",
-                            "description": "List built-in physical-layer RF/serial link profiles (LoRa SF12, BLE 1M, congested Wi-Fi, LEO sat, UART 9600).",
+                            "description": "List physical-layer RF/serial link profiles (LoRa SF12, BLE 1M, congested Wi-Fi, LEO sat, UART 9600, plus licensed profiles.toml entries).",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {}
@@ -77,13 +77,13 @@ pub fn run_mcp_stdio() -> Result<(), String> {
                         },
                         {
                             "name": "analyze_code",
-                            "description": "Run deterministic tree-sitter AST + physical-layer link rules on Python or Rust source code or a file/directory path.",
+                            "description": "Run deterministic tree-sitter AST + physical-layer link rules on Python, Rust, C/C++, TypeScript, or JavaScript source code or a file/directory path.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "path": { "type": "string", "description": "File or directory path on disk (e.g. './bad_telemetry.py'). Use this for existing files." },
                                     "code": { "type": "string", "description": "Raw source code text ONLY (do not pass a filename here)." },
-                                    "language": { "type": "string", "enum": ["python", "rust"] },
+                                    "language": { "type": "string", "enum": ["python", "rust", "cpp", "typescript", "javascript"] },
                                     "profile": { "type": "string", "default": "lora-sf12" },
                                     "hz": { "type": "number", "default": 10.0 }
                                 },
@@ -112,22 +112,19 @@ fn handle_tool_call(id: Value, params: &Value) -> Value {
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
     let result = match name {
-        "list_link_profiles" => Ok(json!(builtin_profiles())),
+        "list_link_profiles" => Ok(json!(all_profiles(None).unwrap_or_else(|_| builtin_profiles()))),
         "evaluate_payload" => {
             let pid = args.get("profile").and_then(|v| v.as_str()).unwrap_or("lora-sf12");
             let bytes = args.get("payload_bytes").and_then(|v| v.as_u64()).unwrap_or(64) as usize;
             let hz = args.get("hz").and_then(|v| v.as_f64()).unwrap_or(1.0);
-            match get_profile(pid) {
-                Some(p) => Ok(json!(evaluate_payload(&p, bytes, hz))),
-                None => Err(format!("Unknown profile: {pid}")),
-            }
+            resolve_profile(pid, None).map(|p| json!(evaluate_payload(&p, bytes, hz)))
         }
         "analyze_code" => {
             let pid = args.get("profile").and_then(|v| v.as_str()).unwrap_or("lora-sf12");
             let hz = args.get("hz").and_then(|v| v.as_f64()).unwrap_or(10.0);
-            match get_profile(pid) {
-                None => Err(format!("Unknown profile: {pid}")),
-                Some(profile) => {
+            match resolve_profile(pid, None) {
+                Err(e) => Err(e),
+                Ok(profile) => {
                     let explicit_path = args.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
                     let raw_code = args.get("code").and_then(|v| v.as_str());
 

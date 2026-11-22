@@ -8,7 +8,7 @@ mod physics;
 mod proxy;
 
 use crate::analyzer::{analyze_path, report_exceeds_threshold, FailThreshold};
-use crate::budgets::{check_summary_to_sarif, diagnostics_to_sarif, run_budget_file};
+use crate::budgets::{check_summary_to_sarif, diagnostics_to_sarif, run_budget_file_with_options};
 use crate::license::check_license; // <-- 2. import license check
 use crate::physics::{all_profiles, evaluate_payload, resolve_profile}; // <-- 3. replace builtin_profiles/get_profile
 use crate::proxy::ProxyTransport;
@@ -77,6 +77,9 @@ enum Commands {
     Check {
         #[arg(short, long, default_value = "budgets.toml")]
         config: PathBuf,
+        /// Optional JSON baseline from an earlier run (Pro/Team: fails only on new regressions)
+        #[arg(long)]
+        baseline: Option<PathBuf>,
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
@@ -176,37 +179,40 @@ async fn main() {
                 })
             })
         }
-        Commands::Check { config, format } => run_budget_file(&config).and_then(|summary| {
-            match format {
-                OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
-                }
-                OutputFormat::Sarif => {
-                    let sarif = check_summary_to_sarif(&summary, &config);
-                    println!("{}", serde_json::to_string_pretty(&sarif).unwrap_or_default());
-                }
-                OutputFormat::Text => {
-                    println!(
-                        "Budget Check [{}] | profile={} | diagnostics={} | fail_on={}",
-                        if summary.passed { "PASS" } else { "FAIL" },
-                        summary.profile,
-                        summary.total_diagnostics,
-                        summary.fail_on
-                    );
-                    for p in &summary.payload_results {
-                        println!("  [{}] {}: {}", if p.passed { "PASS" } else { "FAIL" }, p.name, p.reason);
+        Commands::Check { config, baseline, format } => {
+            run_budget_file_with_options(&config, custom_profiles, baseline.as_deref()).and_then(|summary| {
+                match format {
+                    OutputFormat::Json => {
+                        println!("{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
                     }
-                    for d in &summary.diagnostics {
-                        println!("  [{}] {} ({}:{}) - {}", d.severity.to_uppercase(), d.rule_id, d.file, d.line, d.explanation);
+                    OutputFormat::Sarif => {
+                        let sarif = check_summary_to_sarif(&summary, &config);
+                        println!("{}", serde_json::to_string_pretty(&sarif).unwrap_or_default());
+                    }
+                    OutputFormat::Text => {
+                        println!(
+                            "Budget Check [{}] | profile={} | diagnostics={} (suppressed={}) | fail_on={}",
+                            if summary.passed { "PASS" } else { "FAIL" },
+                            summary.profile,
+                            summary.total_diagnostics,
+                            summary.suppressed_by_baseline,
+                            summary.fail_on
+                        );
+                        for p in &summary.payload_results {
+                            println!("  [{}] {}: {}", if p.passed { "PASS" } else { "FAIL" }, p.name, p.reason);
+                        }
+                        for d in &summary.diagnostics {
+                            println!("  [{}] {} ({}:{}) - {}", d.severity.to_uppercase(), d.rule_id, d.file, d.line, d.explanation);
+                        }
                     }
                 }
-            }
-            if summary.passed {
-                Ok(())
-            } else {
-                Err("Budget check failed.".into())
-            }
-        }),
+                if summary.passed {
+                    Ok(())
+                } else {
+                    Err("Budget check failed.".into())
+                }
+            })
+        }
         Commands::Budget { profile, bytes, hz } => {
             resolve_profile(&profile, custom_profiles).map(|prof| {
                 let rep = evaluate_payload(&prof, bytes, hz);
