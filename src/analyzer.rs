@@ -8,13 +8,26 @@ use tree_sitter::{Node, Parser};
 pub enum Lang {
     Python,
     Rust,
+    Cpp,
+    TypeScript,
+    JavaScript,
 }
 
 impl Lang {
     pub fn from_path(path: &Path) -> Option<Self> {
-        match path.extension().and_then(|e| e.to_str()) {
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref()
+        {
             Some("py") => Some(Self::Python),
             Some("rs") => Some(Self::Rust),
+            Some("c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" | "ino") => {
+                Some(Self::Cpp)
+            }
+            Some("ts" | "tsx" | "mts" | "cts") => Some(Self::TypeScript),
+            Some("js" | "jsx" | "mjs" | "cjs") => Some(Self::JavaScript),
             _ => None,
         }
     }
@@ -23,6 +36,9 @@ impl Lang {
         match name.to_lowercase().as_str() {
             "py" | "python" => Some(Self::Python),
             "rs" | "rust" => Some(Self::Rust),
+            "c" | "cc" | "cpp" | "c++" | "h" | "hpp" | "ino" => Some(Self::Cpp),
+            "ts" | "tsx" | "typescript" => Some(Self::TypeScript),
+            "js" | "jsx" | "javascript" => Some(Self::JavaScript),
             _ => None,
         }
     }
@@ -31,6 +47,9 @@ impl Lang {
         match self {
             Self::Python => "python",
             Self::Rust => "rust",
+            Self::Cpp => "cpp",
+            Self::TypeScript => "typescript",
+            Self::JavaScript => "javascript",
         }
     }
 }
@@ -142,6 +161,22 @@ pub fn analyze_source(
         Lang::Rust => parser
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .map_err(|e| format!("Rust grammar error: {e}"))?,
+        Lang::Cpp => parser
+            .set_language(&tree_sitter_cpp::LANGUAGE.into())
+            .map_err(|e| format!("C/C++ grammar error: {e}"))?,
+        Lang::TypeScript => {
+            let ts_lang = if file_label.to_ascii_lowercase().ends_with(".tsx") {
+                tree_sitter_typescript::LANGUAGE_TSX.into()
+            } else {
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+            };
+            parser
+                .set_language(&ts_lang)
+                .map_err(|e| format!("TypeScript grammar error: {e}"))?;
+        }
+        Lang::JavaScript => parser
+            .set_language(&tree_sitter_javascript::LANGUAGE.into())
+            .map_err(|e| format!("JavaScript grammar error: {e}"))?,
     }
 
     let tree = parser
@@ -151,7 +186,12 @@ pub fn analyze_source(
     let has_timeout_in_file = source.contains("settimeout")
         || source.contains("set_read_timeout")
         || source.contains("set_write_timeout")
-        || source.contains("tokio::time::timeout");
+        || source.contains("tokio::time::timeout")
+        || source.contains("AbortController")
+        || source.contains("AbortSignal.timeout")
+        || source.contains("SO_RCVTIMEO")
+        || source.contains("SO_SNDTIMEO")
+        || source.contains("Serial.setTimeout");
 
     let mut diags = Vec::new();
     let ctx = WalkContext {
@@ -187,7 +227,7 @@ fn collect_files(path: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), S
             let entry = entry.map_err(|e| e.to_string())?;
             let p = entry.path();
             if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                if name == "target" || name == "node_modules" || name.starts_with('.') {
+                if name == "target" || name == "node_modules" || name == "dist" || name.starts_with('.') {
                     continue;
                 }
             }
@@ -200,7 +240,14 @@ fn collect_files(path: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), S
 fn is_loop_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "for_statement" | "while_statement" | "for_expression" | "while_expression" | "loop_expression"
+        "for_statement"
+            | "for_in_statement"
+            | "for_range_loop"
+            | "while_statement"
+            | "do_statement"
+            | "for_expression"
+            | "while_expression"
+            | "loop_expression"
     )
 }
 
@@ -211,14 +258,72 @@ fn is_batch_if_guard(node: Node, source: &str) -> bool {
     }
     if let Some(cond) = node.child_by_field_name("condition") {
         let cond_txt = cond.utf8_text(source.as_bytes()).unwrap_or("");
-        let has_len = cond_txt.contains("len(") || cond_txt.contains(".len()");
+        let has_len = cond_txt.contains("len(")
+            || cond_txt.contains(".len()")
+            || cond_txt.contains(".length")
+            || cond_txt.contains(".byteLength")
+            || cond_txt.contains(".size()");
         let has_cmp = cond_txt.contains(">=") || cond_txt.contains("==") || cond_txt.contains('>');
         return has_len && has_cmp;
     }
     false
 }
 
-/// Scan the immediate loop body for `sleep(...)` literals and infer Hz = 1 / seconds.
+fn cpp_function_name<'a>(node: Node<'a>, source: &'a str) -> Option<&'a str> {
+    if node.kind() != "function_definition" {
+        return None;
+    }
+    let decl = node.child_by_field_name("declarator")?;
+    let inner = decl.child_by_field_name("declarator").unwrap_or(decl);
+    inner.utf8_text(source.as_bytes()).ok()
+}
+
+fn is_cpp_loop_fn(node: Node, source: &str) -> bool {
+    cpp_function_name(node, source) == Some("loop")
+}
+
+fn is_cpp_rtos_or_async_fn(node: Node, source: &str) -> bool {
+    if node.kind() != "function_definition" {
+        return false;
+    }
+    let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+    let header = text.split('{').next().unwrap_or("");
+    if header.contains("pvParameters") || text.contains("co_await") || text.contains("co_return") {
+        return true;
+    }
+    if let Some(name) = cpp_function_name(node, source) {
+        let lower = name.to_ascii_lowercase();
+        return lower.contains("task")
+            || lower.contains("worker")
+            || lower.contains("thread")
+            || lower.contains("async");
+    }
+    false
+}
+
+fn extract_setinterval_hz(node: Node, source: &str) -> Option<f64> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let callee = node
+        .child_by_field_name("function")
+        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+        .unwrap_or("");
+    if callee != "setInterval" && !callee.ends_with(".setInterval") {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let ms_node = args.named_child(1)?;
+    let ms_text = ms_node.utf8_text(source.as_bytes()).ok()?.trim();
+    let ms = ms_text.replace('_', "").parse::<f64>().ok()?;
+    if ms > 0.0 {
+        Some((1000.0 / ms).clamp(0.001, 100_000.0))
+    } else {
+        None
+    }
+}
+
+/// Scan the immediate loop body for `sleep(...)` / `delay(...)` literals and infer Hz = 1 / seconds.
 fn infer_loop_hz(loop_node: Node, source: &str, lang: Lang) -> Option<f64> {
     fn scan(node: Node, source: &str, lang: Lang, is_root: bool) -> Option<f64> {
         let kind = node.kind();
@@ -247,6 +352,36 @@ fn infer_loop_hz(loop_node: Node, source: &str, lang: Lang) -> Option<f64> {
                         if let Some(secs) = extract_rust_duration_secs(text) {
                             if secs > 0.0 {
                                 return Some((1.0 / secs).clamp(0.001, 100_000.0));
+                            }
+                        }
+                    }
+                }
+                Lang::Cpp => {
+                    if callee == "delay" || callee == "HAL_Delay" || callee == "pdMS_TO_TICKS" {
+                        if let Some(ms) = extract_single_float_in_parens(text) {
+                            if ms > 0.0 {
+                                return Some((1000.0 / ms).clamp(0.001, 100_000.0));
+                            }
+                        }
+                    } else if callee == "usleep" || callee == "delayMicroseconds" {
+                        if let Some(us) = extract_single_float_in_parens(text) {
+                            if us > 0.0 {
+                                return Some((1_000_000.0 / us).clamp(0.001, 100_000.0));
+                            }
+                        }
+                    } else if callee == "sleep" {
+                        if let Some(secs) = extract_single_float_in_parens(text) {
+                            if secs > 0.0 {
+                                return Some((1.0 / secs).clamp(0.001, 100_000.0));
+                            }
+                        }
+                    }
+                }
+                Lang::TypeScript | Lang::JavaScript => {
+                    if callee == "sleep" || callee.ends_with(".sleep") {
+                        if let Some(ms) = extract_single_float_in_parens(text) {
+                            if ms > 0.0 {
+                                return Some((1000.0 / ms).clamp(0.001, 100_000.0));
                             }
                         }
                     }
@@ -310,8 +445,18 @@ fn walk_node(
     let kind = node.kind();
     let text = node.utf8_text(source.as_bytes()).unwrap_or("");
 
-    let is_loop = is_loop_kind(kind);
-    let inferred_hz = if is_loop {
+    let setinterval_hz = match lang {
+        Lang::TypeScript | Lang::JavaScript => extract_setinterval_hz(node, source),
+        _ => None,
+    };
+
+    let is_loop = is_loop_kind(kind)
+        || (lang == Lang::Cpp && is_cpp_loop_fn(node, source))
+        || setinterval_hz.is_some();
+
+    let inferred_hz = if setinterval_hz.is_some() {
+        setinterval_hz.or(ctx.loop_hz_inferred)
+    } else if is_loop {
         infer_loop_hz(node, source, lang).or(ctx.loop_hz_inferred)
     } else {
         ctx.loop_hz_inferred
@@ -327,6 +472,18 @@ fn walk_node(
                     .unwrap_or("")
                     .split_whitespace()
                     .any(|w| w == "async")
+        }
+        Lang::Cpp => is_cpp_rtos_or_async_fn(node, source),
+        Lang::TypeScript | Lang::JavaScript => {
+            matches!(
+                kind,
+                "function_declaration" | "function_expression" | "arrow_function" | "method_definition"
+            ) && text
+                .split('{')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .any(|w| w == "async")
         }
     };
 
@@ -395,22 +552,36 @@ fn inspect_call(
 
     let effective_hz = ctx.loop_hz_inferred.unwrap_or(assumed_hz);
     let hz_source = if let Some(h) = ctx.loop_hz_inferred {
-        format!("{:.2} Hz (inferred from loop sleep)", (h * 100.0).round() / 100.0)
+        format!("{:.2} Hz (inferred from loop period)", (h * 100.0).round() / 100.0)
     } else {
         format!("{assumed_hz} Hz")
     };
 
-    // Rule 1: JSON serialization inside a loop
-    let is_json_ser = callee.ends_with("json.dumps")
-        || callee.ends_with("serde_json::to_string")
-        || callee.ends_with("serde_json::to_vec");
+    // Rule 1: JSON / text formatting serialization inside a loop
+    let is_json_ser = match lang {
+        Lang::Python | Lang::Rust => {
+            callee.ends_with("json.dumps")
+                || callee.ends_with("serde_json::to_string")
+                || callee.ends_with("serde_json::to_vec")
+        }
+        Lang::Cpp => {
+            callee == "serializeJson"
+                || callee == "serializeJsonPretty"
+                || callee == "snprintf"
+                || callee == "sprintf"
+                || callee == "vsnprintf"
+                || callee.ends_with("::to_string")
+                || callee.ends_with("::format")
+        }
+        Lang::TypeScript | Lang::JavaScript => callee == "JSON.stringify",
+    };
 
     if is_json_ser && ctx.in_loop {
         let estimated_json_bytes = 96;
         let budget = evaluate_payload(profile, estimated_json_bytes, effective_hz);
         let over_msg = if budget.exceeds_effective_capacity {
             format!(
-                "At {hz_source}, a ~{estimated_json_bytes} B JSON frame requires {:.0} bps ({:.1}% of {}'s {:.0} bps effective goodput).",
+                "At {hz_source}, a ~{estimated_json_bytes} B text/JSON frame requires {:.0} bps ({:.1}% of {}'s {:.0} bps effective goodput).",
                 budget.required_wire_bps,
                 budget.utilization_pct,
                 profile.id,
@@ -418,7 +589,7 @@ fn inspect_call(
             )
         } else {
             format!(
-                "JSON keys/delimiters inflate small frames (~70-80% syntax tax) and trigger {} MTU fragment(s) on {}.",
+                "Text/JSON keys & ASCII formatting inflate small frames (~70-80% syntax tax) and trigger {} MTU fragment(s) on {}.",
                 budget.fragments_per_message, profile.id
             )
         };
@@ -438,18 +609,40 @@ fn inspect_call(
             recommended_fix: match lang {
                 Lang::Python => "Pack numeric fields with struct.pack() or CBOR/Protobuf and batch frames before sending.".into(),
                 Lang::Rust => "Serialize with postcard or bincode into a reusable buffer instead of allocating serde_json strings per iteration.".into(),
+                Lang::Cpp => "Use a packed binary struct, nanopb/CBOR, or fixed-size binary buffer instead of ArduinoJson/snprintf/std::string formatting inside loops.".into(),
+                Lang::TypeScript | Lang::JavaScript => "Pack numeric fields into an ArrayBuffer/DataView/TypedArray or CBOR/Protobuf instead of JSON.stringify() inside periodic loops.".into(),
             },
             budget: Some(budget),
         });
     }
 
     // Rule 2: Transport send/write inside a loop
-    let is_send = callee.ends_with(".send")
-        || callee.ends_with(".sendall")
-        || callee.ends_with(".sendto")
-        || callee.ends_with(".write")
-        || callee.ends_with(".write_all")
-        || callee.ends_with(".send_to");
+    let is_send = match lang {
+        Lang::Python | Lang::Rust => {
+            callee.ends_with(".send")
+                || callee.ends_with(".sendall")
+                || callee.ends_with(".sendto")
+                || callee.ends_with(".write")
+                || callee.ends_with(".write_all")
+                || callee.ends_with(".send_to")
+        }
+        Lang::Cpp => {
+            callee == "send"
+                || callee == "sendto"
+                || callee.ends_with("::send")
+                || callee.ends_with("::sendto")
+                || callee.ends_with(".send")
+                || callee.ends_with(".write")
+                || callee.ends_with(".print")
+                || callee.ends_with(".println")
+        }
+        Lang::TypeScript | Lang::JavaScript => {
+            callee.ends_with(".send")
+                || callee.ends_with(".write")
+                || callee == "fetch"
+                || callee.ends_with(".fetch")
+        }
+    };
 
     if is_send && ctx.in_loop {
         if let Some(lit_len) = extract_string_literal_len(text) {
@@ -474,6 +667,28 @@ fn inspect_call(
         } else if !ctx.in_batch_guard {
             let small_probe = 16;
             let budget = evaluate_payload(profile, small_probe, effective_hz);
+            let cpp_unframed = lang == Lang::Cpp
+                && (callee.ends_with(".print")
+                    || callee.ends_with(".println")
+                    || callee == "send"
+                    || callee == "sendto");
+            let explanation = if cpp_unframed {
+                format!(
+                    "Unframed/unbatched `{}` inside a loop at {hz_source}. On {} ({} B header/frame), a 16 B payload wastes {:.1}% of airtime on headers and risks stream-boundary corruption without packet framing.",
+                    callee, profile.id, profile.header_overhead_bytes, budget.header_overhead_pct
+                )
+            } else {
+                format!(
+                    "Unbatched transport write inside a loop at {hz_source}. On {} ({} B header/frame), a 16 B payload wastes {:.1}% of airtime on headers alone.",
+                    profile.id, profile.header_overhead_bytes, budget.header_overhead_pct
+                )
+            };
+            let recommended_fix = if cpp_unframed {
+                "Add explicit packet framing (length prefix, COBS, or SLIP with CRC) and batch samples into a ring buffer up to the link MTU before transmitting.".into()
+            } else {
+                "Coalesce multiple samples into a buffered ring/batch up to the link MTU before calling send/write.".into()
+            };
+
             diags.push(Diagnostic {
                 rule_id: "UNBATCHED_SEND_IN_LOOP".into(),
                 severity: if budget.exceeds_effective_capacity { "high" } else { "medium" }.into(),
@@ -481,22 +696,32 @@ fn inspect_call(
                 line,
                 column: col,
                 snippet: snippet.clone(),
-                explanation: format!(
-                    "Unbatched transport write inside a loop at {hz_source}. On {} ({} B header/frame), a 16 B payload wastes {:.1}% of airtime on headers alone.",
-                    profile.id, profile.header_overhead_bytes, budget.header_overhead_pct
-                ),
+                explanation,
                 physics_law: "Framing Efficiency = payload / (payload + header_overhead)".into(),
-                recommended_fix: "Coalesce multiple samples into a buffered ring/batch up to the link MTU before calling send/write.".into(),
+                recommended_fix,
                 budget: Some(budget),
             });
         }
     }
 
-    // Rule 3: Blocking sleep / network I/O inside an async function
-    let is_blocking_call = callee.ends_with("time.sleep")
-        || callee.ends_with("thread::sleep")
-        || callee.ends_with("requests.get")
-        || callee.ends_with("requests.post");
+    // Rule 3: Blocking sleep / delay / network I/O inside an async or RTOS task
+    let is_blocking_call = match lang {
+        Lang::Python | Lang::Rust => {
+            callee.ends_with("time.sleep")
+                || callee.ends_with("thread::sleep")
+                || callee.ends_with("requests.get")
+                || callee.ends_with("requests.post")
+        }
+        Lang::Cpp => {
+            callee == "delay"
+                || callee == "HAL_Delay"
+                || callee == "sleep"
+                || callee == "usleep"
+                || callee.ends_with("sleep_for")
+                || callee.ends_with("sleep_until")
+        }
+        Lang::TypeScript | Lang::JavaScript => callee.ends_with("Sync") && callee.contains('.'),
+    };
 
     if is_blocking_call && ctx.in_async {
         diags.push(Diagnostic {
@@ -506,11 +731,16 @@ fn inspect_call(
             line,
             column: col,
             snippet: snippet.clone(),
-            explanation: "Blocking sleep or synchronous I/O inside an async function stalls the executor thread and starves sibling socket/heartbeat tasks.".into(),
+            explanation: match lang {
+                Lang::Cpp => "Blocking delay/sleep inside an RTOS task or coroutine stalls task scheduling and starves sibling RF/serial handlers.".into(),
+                _ => "Blocking sleep or synchronous I/O inside an async function stalls the executor thread and starves sibling socket/heartbeat tasks.".into(),
+            },
             physics_law: "Queueing Delay & Executor Starvation".into(),
             recommended_fix: match lang {
                 Lang::Python => "Replace with `await asyncio.sleep(...)` or an async client (aiohttp/httpx).".into(),
                 Lang::Rust => "Replace with `tokio::time::sleep(...).await` or `tokio::task::spawn_blocking`.".into(),
+                Lang::Cpp => "Replace blocking delay() with `vTaskDelay(pdMS_TO_TICKS(...))`, a non-blocking timer, or `co_await`.".into(),
+                Lang::TypeScript | Lang::JavaScript => "Replace synchronous `*Sync` calls with `await fs.promises.*` / async non-blocking I/O.".into(),
             },
             budget: None,
         });
@@ -521,6 +751,8 @@ fn inspect_call(
         extract_single_float_in_parens(text).map(|s| s * 1000.0)
     } else if callee.ends_with(".set_read_timeout") || callee.ends_with(".set_write_timeout") {
         extract_rust_duration_secs(text).map(|s| s * 1000.0)
+    } else if lang == Lang::Cpp && callee.ends_with(".setTimeout") {
+        extract_single_float_in_parens(text)
     } else {
         None
     };
@@ -535,7 +767,7 @@ fn inspect_call(
                 column: col,
                 snippet: snippet.clone(),
                 explanation: format!(
-                    "Socket timeout ({:.1} ms) is shorter than '{}' base propagation/airtime latency ({:.0} ms)—packets will spuriously time out before arrival.",
+                    "Socket timeout ({:.1} ms) is shorter than '{}' base propagation/airtime latency ({:.0} ms) -- packets will spuriously time out before arrival.",
                     t_ms, profile.id, profile.base_latency_ms
                 ),
                 physics_law: "Timeout Floor > Physical Base RTT + Serialization Airtime".into(),
@@ -550,10 +782,42 @@ fn inspect_call(
         }
     }
 
-    // Rule 5: Transport socket creation without timeout on lossy/high-latency links
+    // Rule 5a: JS/TS fetch() without AbortController / AbortSignal timeout
+    if matches!(lang, Lang::TypeScript | Lang::JavaScript)
+        && (callee == "fetch" || callee.ends_with(".fetch"))
+        && !text.contains("signal")
+        && !ctx.has_timeout_in_file
+    {
+        diags.push(Diagnostic {
+            rule_id: "MISSING_ABORT_TIMEOUT".into(),
+            severity: if profile.base_latency_ms >= 20.0 {
+                "high"
+            } else {
+                "medium"
+            }
+            .into(),
+            file: file_label.into(),
+            line,
+            column: col,
+            snippet: snippet.clone(),
+            explanation: format!(
+                "`fetch()` called without an `AbortController` or `AbortSignal.timeout` while targeting '{}' (base latency {:.0} ms) -- stalled connections can hang indefinitely.",
+                profile.id, profile.base_latency_ms
+            ),
+            physics_law: "Head-of-Line Blocking & Unbounded Stall on Lossy RF Channels".into(),
+            recommended_fix: format!(
+                "Pass `signal: AbortSignal.timeout({:.0})` (or wire an `AbortController` with `setTimeout`) to `fetch()`.",
+                (profile.base_latency_ms * 4.0).max(2000.0)
+            ),
+            budget: None,
+        });
+    }
+
+    // Rule 5b: Transport socket creation without timeout on lossy/high-latency links
     let is_socket_init = callee.ends_with("socket.socket")
         || callee.ends_with("TcpStream::connect")
-        || callee.ends_with("UdpSocket::bind");
+        || callee.ends_with("UdpSocket::bind")
+        || (lang == Lang::Cpp && (callee == "socket" || callee.ends_with("::socket")));
 
     if is_socket_init && !ctx.has_timeout_in_file && profile.base_latency_ms >= 20.0 {
         diags.push(Diagnostic {
@@ -568,7 +832,7 @@ fn inspect_call(
                 profile.id, profile.base_latency_ms
             ),
             physics_law: "Head-of-Line Blocking & Unbounded Stall on Lossy RF Channels".into(),
-            recommended_fix: "Configure explicit read/write timeouts and bounded retry backoff.".into(),
+            recommended_fix: "Configure explicit read/write timeouts (e.g. SO_RCVTIMEO/SO_SNDTIMEO or socket timeout) and bounded retry backoff.".into(),
             budget: None,
         });
     }
@@ -647,5 +911,90 @@ async fn pump(mut stream: std::net::TcpStream) {
         assert!(diags.iter().any(|d| d.rule_id == "BLOCKING_IO_IN_ASYNC"));
         let json_hit = diags.iter().find(|d| d.rule_id == "JSON_IN_LOOP").unwrap();
         assert!((json_hit.budget.as_ref().unwrap().assumed_hz - 20.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn cpp_arduino_loop_and_rtos_delay_detected() {
+        let src = r#"
+#include <ArduinoJson.h>
+void loop() {
+    StaticJsonDocument<128> doc;
+    doc["temp"] = 24.5;
+    char out[128];
+    serializeJson(doc, out);
+    Serial.print(out);
+    delay(20);
+}
+
+void telemetryTask(void *pvParameters) {
+    while (1) {
+        delay(100);
+    }
+}
+"#;
+        let lora = get_profile("lora-sf12").unwrap();
+        let diags = analyze_source(src, Lang::Cpp, "node.ino", &lora, 1.0).unwrap();
+
+        let json_hit = diags.iter().find(|d| d.rule_id == "JSON_IN_LOOP").unwrap();
+        assert!((json_hit.budget.as_ref().unwrap().assumed_hz - 50.0).abs() < 0.5);
+        assert!(diags.iter().any(|d| d.rule_id == "UNBATCHED_SEND_IN_LOOP"));
+        assert!(diags.iter().any(|d| d.rule_id == "BLOCKING_IO_IN_ASYNC"));
+    }
+
+    #[test]
+    fn cpp_snprintf_and_unframed_send_detected() {
+        let src = r#"
+#include <stdio.h>
+#include <string>
+#include <sys/socket.h>
+void pump(int sock, int val) {
+    char buf[64];
+    while (true) {
+        snprintf(buf, sizeof(buf), "{\"v\":%d}", val);
+        send(sock, buf, 16, 0);
+        usleep(50000);
+    }
+}
+"#;
+        let ble = get_profile("ble-1m").unwrap();
+        let diags = analyze_source(src, Lang::Cpp, "tx.cpp", &ble, 1.0).unwrap();
+        assert!(diags.iter().any(|d| d.rule_id == "JSON_IN_LOOP"));
+        assert!(diags.iter().any(|d| d.rule_id == "UNBATCHED_SEND_IN_LOOP"));
+    }
+
+    #[test]
+    fn ts_setinterval_json_ws_and_missing_abort_detected() {
+        let src = r#"
+const ws = new WebSocket("wss://example.com");
+setInterval(() => {
+    const payload = JSON.stringify({ x: 1, y: 2 });
+    ws.send(payload);
+    fetch("https://example.com/telemetry", { method: "POST", body: payload });
+}, 50);
+"#;
+        let lora = get_profile("lora-sf12").unwrap();
+        let diags = analyze_source(src, Lang::TypeScript, "telemetry.ts", &lora, 1.0).unwrap();
+
+        let json_hit = diags.iter().find(|d| d.rule_id == "JSON_IN_LOOP").unwrap();
+        assert!((json_hit.budget.as_ref().unwrap().assumed_hz - 20.0).abs() < 0.5);
+        assert!(diags.iter().any(|d| d.rule_id == "UNBATCHED_SEND_IN_LOOP"));
+        assert!(diags.iter().any(|d| d.rule_id == "MISSING_ABORT_TIMEOUT"));
+    }
+
+    #[test]
+    fn ts_abort_controller_and_batch_guard_clean() {
+        let src = r#"
+const batch: Uint8Array[] = [];
+setInterval(() => {
+    const ac = new AbortController();
+    if (batch.length >= 8) {
+        fetch("https://example.com/batch", { method: "POST", signal: ac.signal });
+        batch.length = 0;
+    }
+}, 5000);
+"#;
+        let lora = get_profile("lora-sf12").unwrap();
+        let diags = analyze_source(src, Lang::TypeScript, "ok.ts", &lora, 1.0).unwrap();
+        assert!(diags.is_empty(), "Expected 0 diagnostics, got: {diags:?}");
     }
 }
