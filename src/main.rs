@@ -5,7 +5,7 @@ mod physics;
 mod proxy;
 
 use crate::analyzer::{analyze_path, report_exceeds_threshold, FailThreshold};
-use crate::budgets::run_budget_file;
+use crate::budgets::{check_summary_to_sarif, diagnostics_to_sarif, run_budget_file};
 use crate::physics::{builtin_profiles, evaluate_payload, get_profile};
 use crate::proxy::ProxyTransport;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -22,6 +22,7 @@ struct Cli {
 enum OutputFormat {
     Text,
     Json,
+    Sarif,
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -119,6 +120,10 @@ async fn main() {
                         OutputFormat::Json => {
                             println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
                         }
+                        OutputFormat::Sarif => {
+                            let sarif = diagnostics_to_sarif(&report.diagnostics);
+                            println!("{}", serde_json::to_string_pretty(&sarif).unwrap_or_default());
+                        }
                         OutputFormat::Text => {
                             println!(
                                 "Scanned {} file(s) against '{}' ({} findings):\n",
@@ -145,6 +150,10 @@ async fn main() {
             match format {
                 OutputFormat::Json => {
                     println!("{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
+                }
+                OutputFormat::Sarif => {
+                    let sarif = check_summary_to_sarif(&summary, &config);
+                    println!("{}", serde_json::to_string_pretty(&sarif).unwrap_or_default());
                 }
                 OutputFormat::Text => {
                     println!(

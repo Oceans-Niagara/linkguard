@@ -1,0 +1,37 @@
+﻿name: LinkGuard Physics Check
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  linkguard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+      - name: Run LinkGuard unit tests
+        run: cargo test
+      - name: Run LinkGuard budget check (SARIF)
+        id: linkguard_check
+        continue-on-error: true
+        run: cargo run --release -- check --config budgets.toml --format sarif > linkguard.sarif
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && hashFiles('linkguard.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: linkguard.sarif
+          category: linkguard
+      - name: Enforce budget gate
+        if: steps.linkguard_check.outcome == 'failure'
+        run: exit 1
