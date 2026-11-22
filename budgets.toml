@@ -1,0 +1,10 @@
+profile = "lora-sf12"
+assumed_hz = 10.0
+fail_on = "high"
+paths = ["./bad_telemetry.py"]
+
+[[payload_checks]]
+name = "telemetry_frame"
+bytes = 20
+hz = 0.25
+require_single_mtu = true

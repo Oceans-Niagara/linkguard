@@ -1,0 +1,193 @@
+mod analyzer;
+mod budgets;
+mod mcp;
+mod physics;
+mod proxy;
+
+use crate::analyzer::{analyze_path, report_exceeds_threshold, FailThreshold};
+use crate::budgets::run_budget_file;
+use crate::physics::{builtin_profiles, evaluate_payload, get_profile};
+use crate::proxy::ProxyTransport;
+use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "linkguard", version, about = "Deterministic AST + physical-layer packet analyzer & proxy")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum FailLevel {
+    None,
+    Critical,
+    High,
+    Medium,
+}
+
+impl From<FailLevel> for FailThreshold {
+    fn from(v: FailLevel) -> Self {
+        match v {
+            FailLevel::None => FailThreshold::None,
+            FailLevel::Critical => FailThreshold::Critical,
+            FailLevel::High => FailThreshold::High,
+            FailLevel::Medium => FailThreshold::Medium,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// List built-in RF / serial link profiles
+    Profiles,
+
+    /// Analyze Python or Rust files against physical-layer constraints
+    Analyze {
+        path: PathBuf,
+        #[arg(short, long, default_value = "lora-sf12")]
+        profile: String,
+        #[arg(long, default_value_t = 10.0)]
+        hz: f64,
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        #[arg(long, value_enum, default_value_t = FailLevel::None)]
+        fail_on: FailLevel,
+    },
+
+    /// Enforce a budgets.toml policy file (CI/CD gate)
+    Check {
+        #[arg(short, long, default_value = "budgets.toml")]
+        config: PathBuf,
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+
+    /// Compute Shannon ceiling, MTU fragmentation, airtime, and BER loss for a payload
+    Budget {
+        #[arg(short, long, default_value = "lora-sf12")]
+        profile: String,
+        #[arg(short, long)]
+        bytes: usize,
+        #[arg(long, default_value_t = 1.0)]
+        hz: f64,
+    },
+
+    /// Run a seeded deterministic physical-layer TCP or UDP proxy
+    Proxy {
+        #[arg(long, default_value = "127.0.0.1:9000")]
+        listen: String,
+        #[arg(long)]
+        target: String,
+        #[arg(short, long, default_value = "wifi-24g-congested")]
+        profile: String,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        #[arg(long, default_value_t = false)]
+        udp: bool,
+    },
+
+    /// Start stdio MCP server for IDE or local LLM agents
+    Mcp,
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let res = match cli.command {
+        Commands::Profiles => {
+            for p in builtin_profiles() {
+                println!(
+                    "{:<20} | goodput={:>9.0} bps | MTU={:>4} B | header={:>2} B | base_lat={:>5.1} ms | SNR={:>5.1} dB",
+                    p.id, p.effective_goodput_bps, p.max_payload_bytes, p.header_overhead_bytes, p.base_latency_ms, p.snr_db
+                );
+                println!("   {}", p.notes);
+            }
+            Ok(())
+        }
+        Commands::Analyze { path, profile, hz, format, fail_on } => {
+            match get_profile(&profile) {
+                None => Err(format!("Unknown profile '{profile}'. Run `linkguard profiles` to list options.")),
+                Some(prof) => analyze_path(&path, &prof, hz).and_then(|report| {
+                    match format {
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+                        }
+                        OutputFormat::Text => {
+                            println!(
+                                "Scanned {} file(s) against '{}' ({} findings):\n",
+                                report.files_scanned, report.target_profile, report.diagnostics.len()
+                            );
+                            for d in &report.diagnostics {
+                                println!("[{}] {} ({}:{}:{})", d.severity.to_uppercase(), d.rule_id, d.file, d.line, d.column);
+                                println!("  Code:   {}", d.snippet);
+                                println!("  Issue:  {}", d.explanation);
+                                println!("  Law:    {}", d.physics_law);
+                                println!("  Fix:    {}\n", d.recommended_fix);
+                            }
+                        }
+                    }
+                    if report_exceeds_threshold(&report.diagnostics, fail_on.into()) {
+                        Err("Diagnostics exceeded --fail-on threshold.".into())
+                    } else {
+                        Ok(())
+                    }
+                }),
+            }
+        }
+        Commands::Check { config, format } => run_budget_file(&config).and_then(|summary| {
+            match format {
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
+                }
+                OutputFormat::Text => {
+                    println!(
+                        "Budget Check [{}] | profile={} | diagnostics={} | fail_on={}",
+                        if summary.passed { "PASS" } else { "FAIL" },
+                        summary.profile,
+                        summary.total_diagnostics,
+                        summary.fail_on
+                    );
+                    for p in &summary.payload_results {
+                        println!("  [{}] {}: {}", if p.passed { "PASS" } else { "FAIL" }, p.name, p.reason);
+                    }
+                    for d in &summary.diagnostics {
+                        println!("  [{}] {} ({}:{}) - {}", d.severity.to_uppercase(), d.rule_id, d.file, d.line, d.explanation);
+                    }
+                }
+            }
+            if summary.passed {
+                Ok(())
+            } else {
+                Err("Budget check failed.".into())
+            }
+        }),
+        Commands::Budget { profile, bytes, hz } => match get_profile(&profile) {
+            None => Err(format!("Unknown profile '{profile}'.")),
+            Some(prof) => {
+                let rep = evaluate_payload(&prof, bytes, hz);
+                println!("{}", serde_json::to_string_pretty(&rep).unwrap_or_default());
+                Ok(())
+            }
+        },
+        Commands::Proxy { listen, target, profile, seed, udp } => match get_profile(&profile) {
+            None => Err(format!("Unknown profile '{profile}'.")),
+            Some(prof) => {
+                let transport = if udp { ProxyTransport::Udp } else { ProxyTransport::Tcp };
+                proxy::run_proxy(&listen, &target, prof, seed, transport).await
+            }
+        },
+        Commands::Mcp => mcp::run_mcp_stdio(),
+    };
+
+    if let Err(e) = res {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+}
