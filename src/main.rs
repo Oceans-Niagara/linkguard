@@ -1,3 +1,5 @@
+#[cfg(feature = "gui")]
+mod gui;
 mod analyzer;
 mod budgets;
 mod license; // <-- 1. add module
@@ -105,6 +107,20 @@ enum Commands {
 
     /// Start stdio MCP server for IDE or local LLM agents
     Mcp,
+
+    /// Launch the Pro Desktop Dashboard (requires `--features gui` & Pro/Team license)
+    Gui {
+        #[arg(short, long, default_value = "lora-sf12")]
+        profile: String,
+        #[arg(long, default_value = "127.0.0.1:9000")]
+        listen: String,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        #[arg(long, default_value_t = false)]
+        udp: bool,
+    },
 }
 
 #[tokio::main]
@@ -207,6 +223,18 @@ async fn main() {
             }
         }
         Commands::Mcp => mcp::run_mcp_stdio(),
+        Commands::Gui { profile, listen, target, seed, udp } => {
+            #[cfg(feature = "gui")]
+            {
+                resolve_profile(&profile, custom_profiles)
+                    .and_then(|prof| gui::run_dashboard(prof, listen, target, seed, udp))
+            }
+            #[cfg(not(feature = "gui"))]
+            {
+                let _ = (profile, listen, target, seed, udp);
+                Err("GUI support is not compiled in this headless build. Run with: cargo run --features gui -- gui".into())
+            }
+        }
     };
 
     if let Err(e) = res {

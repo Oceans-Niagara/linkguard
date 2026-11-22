@@ -5,3 +5,6 @@
 
 *.key
 *.lic
+
+linkguard_capture_*.csv
+linkguard_capture_*.json
