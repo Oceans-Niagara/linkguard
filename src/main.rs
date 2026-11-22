@@ -1,12 +1,14 @@
 mod analyzer;
 mod budgets;
+mod license; // <-- 1. add module
 mod mcp;
 mod physics;
 mod proxy;
 
 use crate::analyzer::{analyze_path, report_exceeds_threshold, FailThreshold};
 use crate::budgets::{check_summary_to_sarif, diagnostics_to_sarif, run_budget_file};
-use crate::physics::{builtin_profiles, evaluate_payload, get_profile};
+use crate::license::check_license; // <-- 2. import license check
+use crate::physics::{all_profiles, evaluate_payload, resolve_profile}; // <-- 3. replace builtin_profiles/get_profile
 use crate::proxy::ProxyTransport;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -14,6 +16,10 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "linkguard", version, about = "Deterministic AST + physical-layer packet analyzer & proxy")]
 struct Cli {
+    /// Optional custom profiles.toml path (requires Pro/Team license)
+    #[arg(long, global = true)]
+    profiles: Option<PathBuf>, // <-- 4. global --profiles flag
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -46,10 +52,13 @@ impl From<FailLevel> for FailThreshold {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// List built-in RF / serial link profiles
+    /// List built-in (and licensed custom) RF / serial link profiles
     Profiles,
 
-    /// Analyze Python or Rust files against physical-layer constraints
+    /// Inspect offline LinkGuard license status (Free / Pro / Team)
+    License, // <-- 5. new subcommand
+
+    /// Analyze Python, Rust, C/C++, TypeScript, or JavaScript files against physical-layer constraints
     Analyze {
         path: PathBuf,
         #[arg(short, long, default_value = "lora-sf12")]
@@ -101,21 +110,26 @@ enum Commands {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    let custom_profiles = cli.profiles.as_deref(); // <-- 6. pass to profile lookups below
+
     let res = match cli.command {
-        Commands::Profiles => {
-            for p in builtin_profiles() {
+        Commands::Profiles => all_profiles(custom_profiles).map(|profiles| {
+            for p in profiles {
                 println!(
                     "{:<20} | goodput={:>9.0} bps | MTU={:>4} B | header={:>2} B | base_lat={:>5.1} ms | SNR={:>5.1} dB",
                     p.id, p.effective_goodput_bps, p.max_payload_bytes, p.header_overhead_bytes, p.base_latency_ms, p.snr_db
                 );
                 println!("   {}", p.notes);
             }
+        }),
+        Commands::License => {
+            let status = check_license();
+            println!("{}", serde_json::to_string_pretty(&status).unwrap_or_default());
             Ok(())
         }
         Commands::Analyze { path, profile, hz, format, fail_on } => {
-            match get_profile(&profile) {
-                None => Err(format!("Unknown profile '{profile}'. Run `linkguard profiles` to list options.")),
-                Some(prof) => analyze_path(&path, &prof, hz).and_then(|report| {
+            resolve_profile(&profile, custom_profiles).and_then(|prof| {
+                analyze_path(&path, &prof, hz).and_then(|report| {
                     match format {
                         OutputFormat::Json => {
                             println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
@@ -143,8 +157,8 @@ async fn main() {
                     } else {
                         Ok(())
                     }
-                }),
-            }
+                })
+            })
         }
         Commands::Check { config, format } => run_budget_file(&config).and_then(|summary| {
             match format {
@@ -177,21 +191,21 @@ async fn main() {
                 Err("Budget check failed.".into())
             }
         }),
-        Commands::Budget { profile, bytes, hz } => match get_profile(&profile) {
-            None => Err(format!("Unknown profile '{profile}'.")),
-            Some(prof) => {
+        Commands::Budget { profile, bytes, hz } => {
+            resolve_profile(&profile, custom_profiles).map(|prof| {
                 let rep = evaluate_payload(&prof, bytes, hz);
                 println!("{}", serde_json::to_string_pretty(&rep).unwrap_or_default());
-                Ok(())
+            })
+        }
+        Commands::Proxy { listen, target, profile, seed, udp } => {
+            match resolve_profile(&profile, custom_profiles) {
+                Err(e) => Err(e),
+                Ok(prof) => {
+                    let transport = if udp { ProxyTransport::Udp } else { ProxyTransport::Tcp };
+                    proxy::run_proxy(&listen, &target, prof, seed, transport).await
+                }
             }
-        },
-        Commands::Proxy { listen, target, profile, seed, udp } => match get_profile(&profile) {
-            None => Err(format!("Unknown profile '{profile}'.")),
-            Some(prof) => {
-                let transport = if udp { ProxyTransport::Udp } else { ProxyTransport::Tcp };
-                proxy::run_proxy(&listen, &target, prof, seed, transport).await
-            }
-        },
+        }
         Commands::Mcp => mcp::run_mcp_stdio(),
     };
 

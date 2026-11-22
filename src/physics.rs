@@ -1,9 +1,13 @@
+use crate::license::require_pro;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkProfile {
-    pub id: &'static str,
-    pub name: &'static str,
+    pub id: Cow<'static, str>,
+    pub name: Cow<'static, str>,
     pub bandwidth_hz: f64,
     pub snr_db: f64,
     /// Realistic protocol payload ceiling after MAC/framing/duty-cycle limits
@@ -11,9 +15,11 @@ pub struct LinkProfile {
     pub max_payload_bytes: usize,
     pub header_overhead_bytes: usize,
     pub base_latency_ms: f64,
+    #[serde(default)]
     pub jitter_ms: f64,
     pub queue_capacity_bytes: usize,
-    pub notes: &'static str,
+    #[serde(default)]
+    pub notes: Cow<'static, str>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,8 +46,8 @@ pub struct PayloadBudgetReport {
 pub fn builtin_profiles() -> Vec<LinkProfile> {
     vec![
         LinkProfile {
-            id: "lora-sf12",
-            name: "LoRa SF12 (125 kHz, Long-Range)",
+            id: Cow::Borrowed("lora-sf12"),
+            name: Cow::Borrowed("LoRa SF12 (125 kHz, Long-Range)"),
             bandwidth_hz: 125_000.0,
             snr_db: -17.5,
             effective_goodput_bps: 293.0,
@@ -50,11 +56,13 @@ pub fn builtin_profiles() -> Vec<LinkProfile> {
             base_latency_ms: 400.0,
             jitter_ms: 40.0,
             queue_capacity_bytes: 512,
-            notes: "DR0 max 51B payload; 13B LoRaWAN MAC header; regional duty-cycle limits apply.",
+            notes: Cow::Borrowed(
+                "DR0 max 51B payload; 13B LoRaWAN MAC header; regional duty-cycle limits apply.",
+            ),
         },
         LinkProfile {
-            id: "ble-1m",
-            name: "BLE 1M PHY (ATT/GATT)",
+            id: Cow::Borrowed("ble-1m"),
+            name: Cow::Borrowed("BLE 1M PHY (ATT/GATT)"),
             bandwidth_hz: 1_000_000.0,
             snr_db: 14.0,
             effective_goodput_bps: 700_000.0,
@@ -63,11 +71,13 @@ pub fn builtin_profiles() -> Vec<LinkProfile> {
             base_latency_ms: 15.0,
             jitter_ms: 5.0,
             queue_capacity_bytes: 4_096,
-            notes: "15ms connection-interval floor; 247B max ATT MTU (20B on legacy peers).",
+            notes: Cow::Borrowed(
+                "15ms connection-interval floor; 247B max ATT MTU (20B on legacy peers).",
+            ),
         },
         LinkProfile {
-            id: "wifi-24g-congested",
-            name: "Congested 2.4 GHz Wi-Fi",
+            id: Cow::Borrowed("wifi-24g-congested"),
+            name: Cow::Borrowed("Congested 2.4 GHz Wi-Fi"),
             bandwidth_hz: 20_000_000.0,
             snr_db: 11.0,
             effective_goodput_bps: 4_500_000.0,
@@ -76,11 +86,13 @@ pub fn builtin_profiles() -> Vec<LinkProfile> {
             base_latency_ms: 28.0,
             jitter_ms: 35.0,
             queue_capacity_bytes: 16_384,
-            notes: "Heavy CSMA/CA airtime contention, TCP/IP + MAC headers, tail-drop bufferbloat.",
+            notes: Cow::Borrowed(
+                "Heavy CSMA/CA airtime contention, TCP/IP + MAC headers, tail-drop bufferbloat.",
+            ),
         },
         LinkProfile {
-            id: "leo-sat",
-            name: "LEO Satellite Link (Ka-Band)",
+            id: Cow::Borrowed("leo-sat"),
+            name: Cow::Borrowed("LEO Satellite Link (Ka-Band)"),
             bandwidth_hz: 50_000_000.0,
             snr_db: 8.5,
             effective_goodput_bps: 12_000_000.0,
@@ -89,11 +101,13 @@ pub fn builtin_profiles() -> Vec<LinkProfile> {
             base_latency_ms: 45.0,
             jitter_ms: 18.0,
             queue_capacity_bytes: 65_536,
-            notes: "High bandwidth-delay product; beam handoffs and rain fade spike jitter/loss.",
+            notes: Cow::Borrowed(
+                "High bandwidth-delay product; beam handoffs and rain fade spike jitter/loss.",
+            ),
         },
         LinkProfile {
-            id: "uart-9600",
-            name: "UART Serial (9600 baud 8N1)",
+            id: Cow::Borrowed("uart-9600"),
+            name: Cow::Borrowed("UART Serial (9600 baud 8N1)"),
             bandwidth_hz: 9_600.0,
             snr_db: 30.0,
             effective_goodput_bps: 7_680.0,
@@ -102,13 +116,61 @@ pub fn builtin_profiles() -> Vec<LinkProfile> {
             base_latency_ms: 2.0,
             jitter_ms: 1.0,
             queue_capacity_bytes: 256,
-            notes: "8N1 framing uses 10 bits per byte (max 960 B/s); small hardware FIFO overflows easily.",
+            notes: Cow::Borrowed(
+                "8N1 framing uses 10 bits per byte (max 960 B/s); small hardware FIFO overflows easily.",
+            ),
         },
     ]
 }
 
 pub fn get_profile(id: &str) -> Option<LinkProfile> {
     builtin_profiles().into_iter().find(|p| p.id == id)
+}
+
+#[derive(Debug, Deserialize)]
+struct CustomProfilesFile {
+    #[serde(default, rename = "profile")]
+    profiles: Vec<LinkProfile>,
+}
+
+pub fn load_custom_profiles(path: &Path) -> Result<Vec<LinkProfile>, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    let parsed: CustomProfilesFile =
+        toml::from_str(&raw).map_err(|e| format!("Invalid {}: {e}", path.display()))?;
+    if parsed.profiles.is_empty() {
+        return Err(format!("No [[profile]] entries found in {}", path.display()));
+    }
+    Ok(parsed.profiles)
+}
+
+pub fn all_profiles(custom_path: Option<&Path>) -> Result<Vec<LinkProfile>, String> {
+    let mut profiles = builtin_profiles();
+    let resolved_path = match custom_path {
+        Some(p) => Some(p),
+        None if Path::new("profiles.toml").is_file() => Some(Path::new("profiles.toml")),
+        None => None,
+    };
+
+    if let Some(path) = resolved_path {
+        require_pro("Custom profiles.toml")?;
+        let custom = load_custom_profiles(path)?;
+        for cp in custom {
+            if let Some(existing) = profiles.iter_mut().find(|p| p.id == cp.id) {
+                *existing = cp;
+            } else {
+                profiles.push(cp);
+            }
+        }
+    }
+    Ok(profiles)
+}
+
+pub fn resolve_profile(id: &str, custom_path: Option<&Path>) -> Result<LinkProfile, String> {
+    all_profiles(custom_path)?
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("Unknown profile '{id}'. Run `linkguard profiles` to list options."))
 }
 
 /// Shannon-Hartley theorem: C = B * log2(1 + SNR_linear)
