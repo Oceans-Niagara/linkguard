@@ -1,0 +1,111 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LinkGuard Live Physics Sandbox</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; background: #0d1117; color: #e6edf3; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 0.75rem 0; }
+    label { display: block; font-size: 0.85rem; color: #8b949e; margin-bottom: 0.25rem; }
+    select, input, button { width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3; box-sizing: border-box; }
+    .presets { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+    .presets button { cursor: pointer; background: #21262d; }
+    .badge { padding: 0.75rem 1rem; border-radius: 8px; font-weight: 600; margin-bottom: 1rem; }
+    .PASS { background: #132e1f; border: 1px solid #2ea043; color: #7ee787; }
+    .WARN { background: #332701; border: 1px solid #d29922; color: #f2cc60; }
+    .FAIL { background: #3b1219; border: 1px solid #f85149; color: #ffa198; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
+    .stat { background: #0d1117; padding: 0.75rem; border-radius: 6px; border: 1px solid #21262d; }
+    .stat small { color: #8b949e; display: block; }
+    .stat strong { font-size: 1.1rem; }
+  </style>
+</head>
+<body>
+  <h1>LinkGuard Physical-Layer Sandbox</h1>
+  <p>Deterministic Rust + WebAssembly link budget calculator (runs 100% in your browser).</p>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label for="profile">Target Physical Link</label>
+        <select id="profile"></select>
+      </div>
+      <div>
+        <label for="bytes">Payload Size (bytes)</label>
+        <input id="bytes" type="number" min="1" max="65535" value="96" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="hz">Send Rate (Hz)</label>
+        <input id="hz" type="number" min="0.01" max="10000" step="0.1" value="10" />
+      </div>
+      <div>
+        <label>Quick Scenarios</label>
+        <div class="presets">
+          <button type="button" onclick="setScenario('lora-sf12', 96, 10)">JSON @ 10 Hz</button>
+          <button type="button" onclick="setScenario('lora-sf12', 20, 0.2)">Binary @ 0.2 Hz</button>
+          <button type="button" onclick="setScenario('ble-1m', 300, 20)">BLE Fragmented</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="verdict" class="badge">Loading WASM...</div>
+  <div id="stats" class="grid"></div>
+
+  <script type="module">
+    import init, { list_profiles_json, evaluate_payload_json } from "./pkg/linkguard_wasm.js";
+
+    await init();
+    const profiles = JSON.parse(list_profiles_json());
+    const sel = document.getElementById("profile");
+    for (const p of profiles) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = `${p.name} (MTU ${p.max_payload_bytes}B, ${p.effective_goodput_bps} bps)`;
+      sel.appendChild(opt);
+    }
+
+    function render() {
+      const pid = sel.value;
+      const bytes = Math.max(1, parseInt(document.getElementById("bytes").value || "1", 10));
+      const hz = Math.max(0.01, parseFloat(document.getElementById("hz").value || "1"));
+      const r = JSON.parse(evaluate_payload_json(pid, bytes, hz));
+
+      const v = document.getElementById("verdict");
+      const kind = r.verdict.startsWith("PASS") ? "PASS" : r.verdict.startsWith("WARN") ? "WARN" : "FAIL";
+      v.className = `badge ${kind}`;
+      v.textContent = r.verdict;
+
+      const items = [
+        ["Required Wire Rate", `${r.required_wire_bps} bps`],
+        ["Effective Goodput", `${r.effective_goodput_bps} bps`],
+        ["Shannon Ceiling", `${r.shannon_ceiling_bps} bps`],
+        ["Utilization", `${r.utilization_pct}%`],
+        ["MTU Fragments", `${r.fragments_per_message} (${r.wire_bytes_per_message} B wire)`],
+        ["Packet Loss (BER)", `${r.packet_loss_prob_pct}%`],
+        ["Header Tax", `${r.header_overhead_pct}%`],
+        ["Airtime / msg", `${r.airtime_ms_per_message} ms`],
+        ["Max Sustainable Hz", `${r.max_sustainable_hz} Hz`],
+      ];
+      document.getElementById("stats").innerHTML = items
+        .map(([k, val]) => `<div class="stat"><small>${k}</small><strong>${val}</strong></div>`)
+        .join("");
+    }
+
+    window.setScenario = (pid, b, hz) => {
+      sel.value = pid;
+      document.getElementById("bytes").value = b;
+      document.getElementById("hz").value = hz;
+      render();
+    };
+    sel.addEventListener("change", render);
+    document.getElementById("bytes").addEventListener("input", render);
+    document.getElementById("hz").addEventListener("input", render);
+    render();
+  </script>
+</body>
+</html>

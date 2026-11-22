@@ -1,4 +1,4 @@
-﻿/target/
+﻿target/
 **/*.rs.bk
 *.pdb
 .DS_Store
@@ -8,3 +8,6 @@
 
 linkguard_capture_*.csv
 linkguard_capture_*.json
+
+node_modules/
+.wrangler/

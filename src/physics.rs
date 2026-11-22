@@ -1,7 +1,10 @@
+#[cfg(not(target_arch = "wasm32"))]
 use crate::license::require_pro;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,12 +130,14 @@ pub fn get_profile(id: &str) -> Option<LinkProfile> {
     builtin_profiles().into_iter().find(|p| p.id == id)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Deserialize)]
 struct CustomProfilesFile {
     #[serde(default, rename = "profile")]
     profiles: Vec<LinkProfile>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn load_custom_profiles(path: &Path) -> Result<Vec<LinkProfile>, String> {
     let raw = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
@@ -144,6 +149,7 @@ pub fn load_custom_profiles(path: &Path) -> Result<Vec<LinkProfile>, String> {
     Ok(parsed.profiles)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn all_profiles(custom_path: Option<&Path>) -> Result<Vec<LinkProfile>, String> {
     let mut profiles = builtin_profiles();
     let resolved_path = match custom_path {
@@ -166,6 +172,7 @@ pub fn all_profiles(custom_path: Option<&Path>) -> Result<Vec<LinkProfile>, Stri
     Ok(profiles)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn resolve_profile(id: &str, custom_path: Option<&Path>) -> Result<LinkProfile, String> {
     all_profiles(custom_path)?
         .into_iter()
