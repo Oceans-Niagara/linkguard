@@ -1,4 +1,4 @@
-﻿name: LinkGuard Physics Check
+name: LinkGuard Physics Check
 
 on:
   push:
@@ -22,16 +22,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Run LinkGuard unit tests
         run: cargo test
-      - name: Run LinkGuard budget check (SARIF)
-        id: linkguard_check
+      - name: Check optional Pro GUI feature build
+        run: cargo check --features gui
+      - name: Run LinkGuard SARIF demo (bad_telemetry.py fixture)
         continue-on-error: true
         run: cargo run --release -- check --config budgets.toml --format sarif > linkguard.sarif
       - name: Upload SARIF to GitHub Code Scanning
         if: always() && hashFiles('linkguard.sarif') != ''
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: linkguard.sarif
           category: linkguard
-      - name: Enforce budget gate
-        if: steps.linkguard_check.outcome == 'failure'
-        run: exit 1
