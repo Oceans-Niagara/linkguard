@@ -82,7 +82,7 @@ pub fn run_budget_file_with_options(
         require_pro("CI Regression Baseline (--baseline)")?;
         let braw = fs::read_to_string(bpath)
             .map_err(|e| format!("Failed to read baseline {}: {e}", bpath.display()))?;
-        let parsed: BaselineFile = serde_json::from_str(&braw)
+        let parsed: BaselineFile = serde_json::from_str(braw.trim_start_matches('\u{feff}'))
             .map_err(|e| format!("Invalid baseline JSON {}: {e}", bpath.display()))?;
         Some(parsed.diagnostics)
     } else {
@@ -91,7 +91,7 @@ pub fn run_budget_file_with_options(
 
     let raw = fs::read_to_string(config_path)
         .map_err(|e| format!("Failed to read {}: {e}", config_path.display()))?;
-    evaluate_budget_toml_with_options(&raw, custom_profiles, baseline_diags.as_deref())
+    evaluate_budget_toml_with_options(raw.trim_start_matches('\u{feff}'), custom_profiles, baseline_diags.as_deref())
 }
 
 #[allow(dead_code)]

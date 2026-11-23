@@ -142,7 +142,7 @@ pub fn load_custom_profiles(path: &Path) -> Result<Vec<LinkProfile>, String> {
     let raw = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
     let parsed: CustomProfilesFile =
-        toml::from_str(&raw).map_err(|e| format!("Invalid {}: {e}", path.display()))?;
+        toml::from_str(raw.trim_start_matches('\u{feff}')).map_err(|e| format!("Invalid {}: {e}", path.display()))?;
     if parsed.profiles.is_empty() {
         return Err(format!("No [[profile]] entries found in {}", path.display()));
     }

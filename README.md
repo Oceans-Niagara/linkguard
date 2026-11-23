@@ -10,7 +10,13 @@ LinkGuard is an offline-first Rust CLI, MCP server, and seeded packet proxy deve
 ## Install & Run Locally
 
 ```bash
-cargo install --git https://github.com/oceans-niagara/linkguard
+# Headless CLI & MCP server (Free, Pro & Team)
+cargo install --git https://github.com/oceans-Niagara/linkguard
+
+# Or include Pro/Team Desktop Dashboard (GUI)
+cargo install --git https://github.com/oceans-Niagara/linkguard --features gui
+linkguard gui
+
 linkguard analyze src/ --profile lora-sf12 --hz 10
 linkguard check --config budgets.toml --format sarif
 linkguard proxy --listen 127.0.0.1:9000 --target 127.0.0.1:9001 --profile ble-1m --seed 42

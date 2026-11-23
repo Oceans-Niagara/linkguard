@@ -1,0 +1,15 @@
+# Example custom physical-layer link profile for LinkGuard Pro & Team
+# Usage: linkguard --profiles profiles.example.toml analyze src/ --profile custom-mesh --hz 10
+
+[[profile]]
+id = "custom-mesh"
+name = "Custom 915MHz Tactical Mesh"
+bandwidth_hz = 500000
+snr_db = 6.0
+effective_goodput_bps = 15000
+max_payload_bytes = 128
+header_overhead_bytes = 14
+base_latency_ms = 25.0
+jitter_ms = 3.5
+queue_capacity_bytes = 2048
+notes = "Custom 915MHz tactical mesh profile"
