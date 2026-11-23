@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Replace this placeholder by running:
 ///   cargo run --features dev-keygen --bin linkguard-keygen -- init
-pub const EMBEDDED_PUBLIC_KEY_B64: &str = "Dt0CckL5Lrx9N_pejv1iO3kyv-3aAL0HZSN_z0Tqfs8";
+pub const EMBEDDED_PUBLIC_KEY_B64: &str = "TMUezvEDd_pBdrqZR3_2qfVn48lD7azxhWGMn9Ph308";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
