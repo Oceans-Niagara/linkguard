@@ -3,6 +3,11 @@ name = "linkguard"
 version = "0.3.0"
 edition = "2021"
 default-run = "linkguard"
+description = "Deterministic physical-layer & framing analyzer for transport code"
+homepage = "https://oceansniagara.com"
+repository = "https://github.com"
+license-file = "LICENSE"
+publish = false
 
 [dependencies]
 base64 = "0.22"
