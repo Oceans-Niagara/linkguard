@@ -1,0 +1,28 @@
+LinkGuard Software License Agreement
+Copyright (c) 2026 Oceans Niagara, LLC. All rights reserved.
+
+This software and its source code are the proprietary property of Oceans Niagara, LLC.
+
+1. Free Tier Grant
+   Oceans Niagara, LLC grants you a non-exclusive, non-transferable license to
+   download, build, install, and execute the Free tier features of LinkGuard
+   for personal, internal business, or evaluation use.
+
+2. Pro & Team Tiers
+   Features gated by offline Ed25519 license keys (LG1...) require a valid,
+   paid license issued by Oceans Niagara, LLC and are governed by the tier
+   scope purchased at https://oceansniagara.com/linkguard/.
+
+3. Restrictions
+   Except as expressly permitted above, you may not redistribute, sublicense,
+   sell, publish modified forks, or offer LinkGuard as a hosted or commercial
+   service without prior written permission from Oceans Niagara, LLC.
+
+4. Disclaimer of Warranty
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
