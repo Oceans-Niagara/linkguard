@@ -177,11 +177,15 @@ async function sendLicenseEmail(
   }
 }
 
-function corsHeaders(env: Env): Record<string, string> {
+function corsHeaders(env: Env, request?: Request): Record<string, string> {
+  const allowed = env.ALLOWED_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+  const reqOrigin = request?.headers.get("Origin")?.trim();
+  const origin = reqOrigin && allowed.includes(reqOrigin) ? reqOrigin : allowed[0] || "*";
   return {
-    "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN,
+    "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
+    "Vary": "Origin",
   };
 }
 
@@ -190,7 +194,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(env) });
+      return new Response(null, { status: 204, headers: corsHeaders(env, request) });
     }
 
     // Instant post-checkout key claim for your GitHub Pages success page:
@@ -200,13 +204,13 @@ export default {
       if (!sessionId || !sessionId.startsWith("cs_")) {
         return new Response(JSON.stringify({ error: "Invalid session_id" }), {
           status: 400,
-          headers: { "Content-Type": "application/json", ...corsHeaders(env) },
+          headers: { "Content-Type": "application/json", ...corsHeaders(env, request) },
         });
       }
       if (!env.STRIPE_API_KEY) {
         return new Response(JSON.stringify({ error: "Claim endpoint not configured" }), {
           status: 501,
-          headers: { "Content-Type": "application/json", ...corsHeaders(env) },
+          headers: { "Content-Type": "application/json", ...corsHeaders(env, request) },
         });
       }
 
@@ -215,7 +219,7 @@ export default {
         if (session.payment_status !== "paid") {
           return new Response(JSON.stringify({ error: "Payment not completed yet" }), {
             status: 402,
-            headers: { "Content-Type": "application/json", ...corsHeaders(env) },
+            headers: { "Content-Type": "application/json", ...corsHeaders(env, request) },
           });
         }
 
@@ -234,12 +238,12 @@ export default {
 
         return new Response(JSON.stringify({ tier, holder: email, license: token }), {
           status: 200,
-          headers: { "Content-Type": "application/json", ...corsHeaders(env) },
+          headers: { "Content-Type": "application/json", ...corsHeaders(env, request) },
         });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e?.message || "Lookup failed" }), {
           status: 500,
-          headers: { "Content-Type": "application/json", ...corsHeaders(env) },
+          headers: { "Content-Type": "application/json", ...corsHeaders(env, request) },
         });
       }
     }
