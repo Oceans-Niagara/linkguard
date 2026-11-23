@@ -1,0 +1,15 @@
+{
+  "name": "linkguard-wasm",
+  "type": "module",
+  "version": "0.3.0",
+  "files": [
+    "linkguard_wasm_bg.wasm",
+    "linkguard_wasm.js",
+    "linkguard_wasm.d.ts"
+  ],
+  "main": "linkguard_wasm.js",
+  "types": "linkguard_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

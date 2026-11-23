@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LinkGuard — Deterministic Physical-Layer &amp; Framing Analyzer</title>
+  <link rel="stylesheet" href="./style.css?v=1" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <a class="brand" href="./">LinkGuard</a>
+      <nav>
+        <a href="./sandbox.html">WASM Sandbox</a>
+        <a href="#pricing">Pricing</a>
+        <a href="https://github.com/Oceans-Niagara/linkguard">GitHub</a>
+      </nav>
+    </header>
+
+    <!-- Post-Checkout Stripe License Fulfillment -->
+    <section id="claim-box" class="box hidden">
+      <h3 id="claim-status">Verifying Stripe checkout session...</h3>
+      <p id="claim-meta" class="muted" style="margin-bottom:0;"></p>
+      <div id="claim-details" class="hidden">
+        <div id="claim-token" class="token"></div>
+        <div class="actions" style="margin-top:0; margin-bottom:12px;">
+          <button id="copy-btn" type="button" class="btn btn-solid">Copy License Key</button>
+          <button id="dl-btn" type="button" class="btn">Download linkguard.lic</button>
+        </div>
+        <pre id="claim-activate"></pre>
+        <p class="muted" style="margin-top:10px; margin-bottom:0;">
+          A backup copy was also emailed to you. Questions: <a href="mailto:connect@oceansniagara.com">connect@oceansniagara.com</a>
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h1>Deterministic link physics for transport code.</h1>
+      <p>
+        LinkGuard is an offline-first Rust CLI, MCP server, and seeded packet proxy. It pairs local
+        <code>tree-sitter</code> AST rules (Python, Rust, C/C++, TS/JS) with real physical-layer limits
+        (<code>lora-sf12</code>, <code>ble-1m</code>, congested Wi-Fi, LEO satellite, UART) — zero LLM dependency, zero code leaving your machine.
+      </p>
+      <div class="actions">
+        <a class="btn btn-solid" href="./sandbox.html">Open WASM Sandbox</a>
+        <a class="btn" href="#pricing">Pro &amp; Team Keys</a>
+        <a class="btn" href="https://github.com/Oceans-Niagara/linkguard">Source on GitHub</a>
+      </div>
+    </section>
+
+    <section>
+      <h2>Install &amp; Run Locally</h2>
+      <pre>cargo install --git https://github.com/Oceans-Niagara/linkguard
+
+linkguard analyze src/ --profile lora-sf12 --hz 10
+linkguard check --config budgets.toml --format sarif
+linkguard proxy --listen 127.0.0.1:9000 --target 127.0.0.1:9001 --profile ble-1m --seed 42
+linkguard mcp</pre>
+    </section>
+
+    <section id="pricing">
+      <h2>Licensing (v0.3)</h2>
+      <p class="muted">Ed25519-signed offline keys (<code>LG1...</code>) verified locally with zero network calls.</p>
+
+      <div class="tier-grid">
+        <div class="tier">
+          <div>
+            <h3>Free</h3>
+            <div class="price">$0 <span>MIT / Apache-2.0</span></div>
+            <ul>
+              <li>Core CLI &amp; stdio MCP server</li>
+              <li>Python, Rust, C/C++, TS/JS AST rules</li>
+              <li>Built-in RF &amp; serial profiles</li>
+              <li><code>budgets.toml</code>, SARIF &amp; seeded proxy</li>
+              <li>Browser WASM sandbox</li>
+            </ul>
+          </div>
+          <a class="btn" href="./sandbox.html" style="text-align:center;">Try Sandbox</a>
+        </div>
+
+        <div class="tier tier-pro">
+          <div>
+            <h3>Pro</h3>
+            <div class="price">$19.99 <span>one-time</span></div>
+            <ul>
+              <li>Everything in Free</li>
+              <li>Offline Ed25519 key (<code>LG1...</code>)</li>
+              <li>Custom <code>profiles.toml</code> in budgets &amp; proxy</li>
+              <li>CI baseline ratchet (<code>--baseline</code>)</li>
+              <li>Desktop GUI + CSV/JSON capture export</li>
+            </ul>
+          </div>
+          <a class="btn btn-solid" href="https://buy.stripe.com/5kQ4gA0aeb0C73L03t8N201" style="text-align:center;">Buy Pro</a>
+        </div>
+
+        <div class="tier">
+          <div>
+            <h3>Team</h3>
+            <div class="price">$59.99 <span>one-time</span></div>
+            <ul>
+              <li>Everything in Pro for your team</li>
+              <li>Shared offline key for CI runners</li>
+              <li>Team <code>budgets.toml</code> &amp; custom link profiles</li>
+              <li>Priority email support</li>
+            </ul>
+          </div>
+          <a class="btn" href="https://buy.stripe.com/7sY3cwg9cfgS1JrbMb8N200" style="text-align:center;">Buy Team</a>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <span>&copy; 2026 Oceans Niagara, LLC &bull; LinkGuard v0.3</span>
+      <span><a href="mailto:connect@oceansniagara.com">connect@oceansniagara.com</a></span>
+    </footer>
+  </div>
+
+  <script>
+    const WORKER_CLAIM_URL = "https://linkguard-license-worker.linkguard-api.workers.dev/claim";
+    const sessionId = new URLSearchParams(window.location.search).get("session_id");
+
+    if (sessionId) {
+      const box = document.getElementById("claim-box");
+      const statusEl = document.getElementById("claim-status");
+      const metaEl = document.getElementById("claim-meta");
+      const detailsEl = document.getElementById("claim-details");
+      box.classList.remove("hidden");
+
+      fetch(`${WORKER_CLAIM_URL}?session_id=${encodeURIComponent(sessionId)}`)
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          return data;
+        })
+        .then((data) => {
+          statusEl.textContent = `License Ready — LinkGuard ${String(data.tier || "pro").toUpperCase()}`;
+          metaEl.textContent = `Issued to ${data.holder || "customer"}`;
+          document.getElementById("claim-token").textContent = data.license;
+          document.getElementById("claim-activate").textContent =
+            `# Option A: save downloaded linkguard.lic in your project folder\n` +
+            `# Option B (PowerShell):\n$env:LINKGUARD_LICENSE="${data.license}"\nlinkguard license`;
+
+          document.getElementById("copy-btn").addEventListener("click", async () => {
+            await navigator.clipboard.writeText(data.license);
+            document.getElementById("copy-btn").textContent = "Copied!";
+          });
+          document.getElementById("dl-btn").addEventListener("click", () => {
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(new Blob([data.license + "\n"], { type: "text/plain" }));
+            a.download = "linkguard.lic";
+            a.click();
+          });
+          detailsEl.classList.remove("hidden");
+        })
+        .catch((err) => {
+          statusEl.textContent = "License Lookup Delayed";
+          metaEl.textContent = `${err.message} — check your email from connect@oceansniagara.com or refresh.`;
+        });
+    }
+  </script>
+</body>
+</html>

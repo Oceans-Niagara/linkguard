@@ -1,111 +1,493 @@
-﻿<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LinkGuard Live Physics Sandbox</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; background: #0d1117; color: #e6edf3; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 0.75rem 0; }
-    label { display: block; font-size: 0.85rem; color: #8b949e; margin-bottom: 0.25rem; }
-    select, input, button { width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3; box-sizing: border-box; }
-    .presets { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
-    .presets button { cursor: pointer; background: #21262d; }
-    .badge { padding: 0.75rem 1rem; border-radius: 8px; font-weight: 600; margin-bottom: 1rem; }
-    .PASS { background: #132e1f; border: 1px solid #2ea043; color: #7ee787; }
-    .WARN { background: #332701; border: 1px solid #d29922; color: #f2cc60; }
-    .FAIL { background: #3b1219; border: 1px solid #f85149; color: #ffa198; }
-    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
-    .stat { background: #0d1117; padding: 0.75rem; border-radius: 6px; border: 1px solid #21262d; }
-    .stat small { color: #8b949e; display: block; }
-    .stat strong { font-size: 1.1rem; }
-  </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LinkGuard Physics Sandbox — Deterministic RF &amp; Framing Bench</title>
+  <link rel="stylesheet" href="./sandbox.css?v=1" />
 </head>
 <body>
-  <h1>LinkGuard Physical-Layer Sandbox</h1>
-  <p>Deterministic Rust + WebAssembly link budget calculator (runs 100% in your browser).</p>
+  <div class="app-shell play-mode">
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div id="sidebar-play-controls" class="sidebar-section">
+        <h2>Quick Play</h2>
+        <label class="field-label" for="play-payload-input">Paste a JSON frame, struct, or telemetry payload</label>
+        <textarea id="play-payload-input" rows="5">{"dev_id":"node-04","temp_c":23.84,"humidity":48.2,"vbat_mv":3712,"seq":10492,"status":"nominal"}</textarea>
+        <div class="preset-grid">
+          <button type="button" class="btn-secondary" data-play-preset="lora_json">LoRa JSON</button>
+          <button type="button" class="btn-secondary" data-play-preset="lora_bin">LoRa Struct</button>
+          <button type="button" class="btn-secondary" data-play-preset="ble_frag">BLE Oversize</button>
+          <button type="button" class="btn-secondary" data-play-preset="leo_burst">LEO Sat</button>
+        </div>
 
-  <div class="card">
-    <div class="row">
-      <div>
-        <label for="profile">Target Physical Link</label>
-        <select id="profile"></select>
+        <label class="field-label" for="play-profile-select">Target Physical Link</label>
+        <select id="play-profile-select"></select>
+
+        <div>
+          <div class="slider-header">
+            <label for="play-hz-slider">Send Rate</label>
+            <span id="play-hz-val" class="mono">10 Hz</span>
+          </div>
+          <input type="range" id="play-hz-slider" min="0.1" max="50" step="0.1" value="10" />
+        </div>
+
+        <p class="play-explainer">
+          <strong>How it works:</strong> Your payload’s exact UTF-8 byte size is evaluated inside LinkGuard’s compiled Rust WebAssembly physics engine. It splits the message into link MTU fragments, adds MAC/framing header bytes per chunk, compares offered wire bps against both realistic protocol goodput and the Shannon–Hartley ceiling, and estimates post-FEC BER packet loss.
+          <span class="play-caveat">Note: Quick Play uses built-in link profiles. Switch to <strong>Simple View</strong> or <strong>Link Bench</strong> to simulate packed binary encoding, tune custom RF/SNR/MTU sliders, sweep frequency &amp; SNR curves, and pin snapshots.</span>
+        </p>
       </div>
-      <div>
-        <label for="bytes">Payload Size (bytes)</label>
-        <input id="bytes" type="number" min="1" max="65535" value="96" />
-      </div>
-    </div>
-    <div class="row">
-      <div>
-        <label for="hz">Send Rate (Hz)</label>
-        <input id="hz" type="number" min="0.01" max="10000" step="0.1" value="10" />
-      </div>
-      <div>
-        <label>Quick Scenarios</label>
-        <div class="presets">
-          <button type="button" onclick="setScenario('lora-sf12', 96, 10)">JSON @ 10 Hz</button>
-          <button type="button" onclick="setScenario('lora-sf12', 20, 0.2)">Binary @ 0.2 Hz</button>
-          <button type="button" onclick="setScenario('ble-1m', 300, 20)">BLE Fragmented</button>
+
+      <div id="sidebar-full-controls" class="hidden">
+        <div class="sidebar-section">
+          <h2>Payload Data</h2>
+          <div class="segmented" id="source-type-tabs">
+            <button type="button" class="seg-btn active" data-source="text">JSON / Payload</button>
+            <button type="button" class="seg-btn" data-source="bytes">Manual Bytes</button>
+          </div>
+
+          <div id="text-controls">
+            <div class="label-row"><span>Quick Presets</span></div>
+            <div class="preset-grid">
+              <button type="button" class="btn-secondary" data-preset="imu_json">IMU JSON</button>
+              <button type="button" class="btn-secondary" data-preset="gps_json">GPS JSON</button>
+              <button type="button" class="btn-secondary" data-preset="packed_struct">Packed Binary</button>
+              <button type="button" class="btn-secondary" data-preset="verbose_log">Verbose Log</button>
+            </div>
+
+            <label class="field-label" for="payload-file-input">Upload payload / sample file</label>
+            <input type="file" id="payload-file-input" accept=".json,.txt,.py,.rs,.c,.cpp,.ts,.csv" />
+            <div id="payload-file-info" class="hint-text hidden"></div>
+
+            <label class="field-label" for="text-input">Or edit payload frame</label>
+            <textarea id="text-input" rows="4">{"dev_id":"node-04","temp_c":23.84,"humidity":48.2,"vbat_mv":3712,"seq":10492,"status":"nominal"}</textarea>
+            <div id="payload-size-info" class="hint-text mono">Raw: 96 B | Packed binary est: ~24 B</div>
+
+            <label class="checkbox-row" title="Strips JSON key names, quotes, and braces to estimate a packed struct / CBOR frame.">
+              <input type="checkbox" id="simulate-binary" />
+              <span>Simulate Packed Binary (struct / CBOR)</span>
+            </label>
+          </div>
+
+          <div id="bytes-controls" class="hidden">
+            <div class="slider-header">
+              <label for="bytes-slider">Payload Size</label>
+              <span id="bytes-val" class="mono">96 B</span>
+            </div>
+            <input type="range" id="bytes-slider" min="1" max="1500" step="1" value="96" />
+            <label class="field-label" for="bytes-number">Exact Byte Length</label>
+            <input type="number" id="bytes-number" min="1" max="65535" value="96" />
+          </div>
+
+          <div class="two-col-fields">
+            <div>
+              <label class="field-label" for="hz-number">Send Rate (Hz)</label>
+              <input type="number" id="hz-number" min="0.01" max="10000" step="0.1" value="10" />
+            </div>
+            <div>
+              <label class="field-label" for="sweep-max-hz">Sweep Max (Hz)</label>
+              <input type="number" id="sweep-max-hz" min="1" max="5000" step="1" value="50" />
+            </div>
+          </div>
+          <div>
+            <div class="slider-header">
+              <label for="hz-slider">Rate Slider (log)</label>
+              <span id="hz-val" class="mono">10.0 Hz</span>
+            </div>
+            <input type="range" id="hz-slider" min="-1" max="3" step="0.02" value="1" />
+          </div>
+        </div>
+
+        <hr />
+
+        <div class="sidebar-section">
+          <h2>Link Physics</h2>
+          <div class="radio-stack">
+            <label class="radio-row" title="Uses LinkGuard's built-in LoRa, BLE, Wi-Fi, LEO Sat, or UART profile.">
+              <input type="radio" name="link-mode" value="builtin" checked />
+              <span>Built-in Physical Profile</span>
+            </label>
+            <label class="radio-row" title="Unlocks live RF/serial link sliders via WASM evaluate_custom_json().">
+              <input type="radio" name="link-mode" value="custom" />
+              <span>Custom RF / Serial Link</span>
+            </label>
+          </div>
+
+          <label class="field-label" for="profile-select">Base Profile</label>
+          <select id="profile-select"></select>
+          <div id="profile-notes" class="hint-text"></div>
+
+          <div id="custom-link-controls" class="hidden">
+            <div>
+              <div class="slider-header">
+                <label for="c-snr-slider">Channel SNR</label>
+                <span id="c-snr-val" class="mono">-10 dB</span>
+              </div>
+              <input type="range" id="c-snr-slider" min="-25" max="40" step="0.5" value="-10" />
+            </div>
+            <div class="two-col-fields">
+              <div>
+                <label class="field-label" for="c-bw">Bandwidth (Hz)</label>
+                <input type="number" id="c-bw" min="100" max="100000000" step="1000" value="125000" />
+              </div>
+              <div>
+                <label class="field-label" for="c-goodput">Goodput (bps)</label>
+                <input type="number" id="c-goodput" min="10" max="100000000" step="50" value="250" />
+              </div>
+            </div>
+            <div class="two-col-fields">
+              <div>
+                <label class="field-label" for="c-mtu">Max Payload MTU (B)</label>
+                <input type="number" id="c-mtu" min="1" max="65535" step="1" value="51" />
+              </div>
+              <div>
+                <label class="field-label" for="c-hdr">Header (B/frag)</label>
+                <input type="number" id="c-hdr" min="0" max="512" step="1" value="13" />
+              </div>
+            </div>
+            <div>
+              <label class="field-label" for="c-lat">Base Latency (ms)</label>
+              <input type="number" id="c-lat" min="0" max="10000" step="1" value="1480" />
+            </div>
+            <button type="button" id="reset-custom-btn" class="btn-secondary">Reset Sliders to Base Profile</button>
+          </div>
         </div>
       </div>
-    </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content">
+      <header class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>LinkGuard Physics Sandbox</h1>
+            <p class="subtitle">See your data on the wire — deterministic Rust + WebAssembly link budgets, MTU framing, and BER loss.</p>
+          </div>
+          <a class="back-link" href="./">← Back to Overview</a>
+        </div>
+      </header>
+
+      <!-- VIEW SWITCHER + SNAPSHOT BAR -->
+      <div class="toolbar">
+        <div class="segmented" id="view-mode-tabs">
+          <button type="button" class="seg-btn active" data-view="play">Quick Play</button>
+          <button type="button" class="seg-btn" data-view="simple">Simple View</button>
+          <button type="button" class="seg-btn" data-view="bench">Link Bench (Detailed)</button>
+        </div>
+
+        <div class="snapshot-bar hidden">
+          <button type="button" id="pin-snapshot-btn" class="btn-primary">📌 Pin Snapshot</button>
+          <select id="compare-select" class="hidden">
+            <option value="">None (no comparison)</option>
+          </select>
+          <div id="visual-cmp-tabs" class="segmented small hidden">
+            <button type="button" class="seg-btn active" data-cmp="baseline">Baseline Below</button>
+            <button type="button" class="seg-btn" data-cmp="overlay">Overlay Curve</button>
+          </div>
+          <button type="button" id="clear-snapshots-btn" class="btn-secondary hidden">Clear</button>
+          <span id="compare-tip" class="hint-text">Pin a snapshot to compare JSON vs. Binary or link profiles with live deltas.</span>
+        </div>
+      </div>
+
+      <!-- QUICK PLAY VIEW -->
+      <section id="play-view">
+        <div class="hero-grid">
+          <div class="visual-card">
+            <h3>1. Wire Frame &amp; MTU Fragmentation</h3>
+            <canvas id="play-frame-canvas" class="frame-canvas"></canvas>
+            <p id="play-frame-cap" class="caption"></p>
+          </div>
+          <div class="visual-card">
+            <h3>2. Offered Load vs. Link Ceilings</h3>
+            <canvas id="play-curve-canvas" class="plot-canvas"></canvas>
+            <p id="play-live-caption" class="play-live-caption"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SIMPLE VIEW -->
+      <section id="simple-view" class="hidden">
+        <div class="regime-banner">
+          <span id="regime-pill" class="regime-pill">Link Regime: —</span>
+          <span id="regime-meta" class="hint-text">—</span>
+        </div>
+
+        <div class="hero-grid">
+          <div class="visual-card">
+            <h3>1. Wire Frame &amp; Header Tax</h3>
+            <canvas id="simple-frame-canvas" class="frame-canvas"></canvas>
+            <p id="simple-left-cap" class="caption"></p>
+          </div>
+          <div class="visual-card">
+            <h3>2. Link Capacity vs. Shannon Limit</h3>
+            <canvas id="simple-curve-canvas" class="plot-canvas"></canvas>
+            <p id="simple-right-cap" class="caption"></p>
+          </div>
+        </div>
+
+        <div id="simple-compare-row" class="hero-grid compare-row hidden">
+          <div class="visual-card">
+            <canvas id="simple-base-frame-canvas" class="frame-canvas"></canvas>
+            <p id="simple-base-left-cap" class="caption"></p>
+          </div>
+          <div class="visual-card">
+            <canvas id="simple-base-curve-canvas" class="plot-canvas"></canvas>
+            <p id="simple-base-right-cap" class="caption"></p>
+          </div>
+        </div>
+
+        <hr />
+
+        <div class="simple-metrics-grid">
+          <div class="metric-card">
+            <div class="metric-label">1. Link Utilization</div>
+            <div class="metric-value-row">
+              <span id="m-util" class="metric-value">—</span>
+              <span id="d-util" class="metric-delta"></span>
+            </div>
+            <div class="progress-track"><div id="p-util" class="progress-fill"></div></div>
+            <div class="caption">&lt;70% healthy • 70–100% tight • &gt;100% queue drops</div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-label">2. Header Overhead Tax</div>
+            <div class="metric-value-row">
+              <span id="m-tax" class="metric-value">—</span>
+              <span id="d-tax" class="metric-delta"></span>
+            </div>
+            <div class="progress-track"><div id="p-tax" class="progress-fill"></div></div>
+            <div class="caption">Fraction of wire bytes spent on protocol headers vs. payload.</div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-label">3. BER Packet Loss Risk</div>
+            <div class="metric-value-row">
+              <span id="m-loss" class="metric-value">—</span>
+              <span id="d-loss" class="metric-delta"></span>
+            </div>
+            <div class="progress-track"><div id="p-loss" class="progress-fill"></div></div>
+            <div class="caption">Drop probability per message from SNR + fragment count.</div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-label">4. Max Sustainable Rate</div>
+            <div class="metric-value-row">
+              <span id="m-maxhz" class="metric-value">—</span>
+              <span id="d-maxhz" class="metric-delta"></span>
+            </div>
+            <div class="swatch-row">
+              <div id="simple-swatch" class="swatch-box"></div>
+              <span id="simple-status-txt" class="mono small-txt">—</span>
+            </div>
+            <div class="caption" id="m-airtime-note">Airtime: —</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LINK BENCH (DETAILED) -->
+      <section id="bench-view" class="hidden">
+        <div class="bench-metrics-group">
+          <div class="bench-metrics-grid">
+            <div class="metric-card compact">
+              <div class="metric-label">Required Wire Rate</div>
+              <div class="metric-value-row">
+                <span id="b-wire" class="metric-value small">—</span>
+                <span id="bd-wire" class="metric-delta"></span>
+              </div>
+            </div>
+            <div class="metric-card compact">
+              <div class="metric-label">Protocol Goodput</div>
+              <div class="metric-value-row">
+                <span id="b-goodput" class="metric-value small">—</span>
+              </div>
+            </div>
+            <div class="metric-card compact">
+              <div class="metric-label">Shannon Ceiling</div>
+              <div class="metric-value-row">
+                <span id="b-shannon" class="metric-value small">—</span>
+              </div>
+            </div>
+            <div class="metric-card compact">
+              <div class="metric-label">Utilization</div>
+              <div class="metric-value-row">
+                <span id="b-util" class="metric-value small">—</span>
+                <span id="bd-util" class="metric-delta"></span>
+              </div>
+            </div>
+            <div class="metric-card compact">
+              <div class="metric-label">MTU Fragments</div>
+              <div class="metric-value-row">
+                <span id="b-frags" class="metric-value small">—</span>
+                <span id="bd-frags" class="metric-delta"></span>
+              </div>
+            </div>
+            <div class="metric-card compact">
+              <div class="metric-label">Link Verdict</div>
+              <div class="swatch-row">
+                <div id="bench-swatch" class="swatch-box small"></div>
+                <span id="bench-verdict-short" class="mono small-txt">—</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="bench-metrics-grid four-col">
+            <div class="metric-card compact">
+              <div class="metric-label">Wire Bytes / Msg</div>
+              <div class="metric-value-row">
+                <span id="b-wirebytes" class="metric-value small">—</span>
+                <span id="bd-wirebytes" class="metric-delta"></span>
+              </div>
+            </div>
+            <div class="metric-card compact">
+              <div class="metric-label">Header Tax (%)</div>
+              <div class="metric-value-row">
+                <span id="b-tax" class="metric-value small">—</span>
+                <span id="bd-tax" class="metric-delta"></span>
+              </div>
+            </div>
+            <div class="metric-card compact">
+              <div class="metric-label">Airtime / Msg (ms)</div>
+              <div class="metric-value-row">
+                <span id="b-airtime" class="metric-value small">—</span>
+                <span id="bd-airtime" class="metric-delta"></span>
+              </div>
+            </div>
+            <div class="metric-card compact">
+              <div class="metric-label">BER Loss / Max Hz</div>
+              <div class="metric-value-row">
+                <span id="b-loss-hz" class="metric-value small">—</span>
+                <span id="bd-maxhz" class="metric-delta"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <details class="field-guide">
+          <summary>Field Guide (what the physics metrics mean)</summary>
+          <ul>
+            <li><strong>Shannon Ceiling</strong> <code>C = B log₂(1 + SNR)</code> — theoretical information-theory limit of the channel before MAC framing or duty-cycle caps.</li>
+            <li><strong>Protocol Goodput</strong> — realistic payload throughput after LoRa airtime/duty-cycle, BLE ATT intervals, Wi-Fi contention, or UART framing.</li>
+            <li><strong>MTU Fragments</strong> — exceeding link MTU splits each message into multiple frames, multiplying header overhead and compound BER loss.</li>
+            <li><strong>BER Loss Prob</strong> — <code>1 - (1 - BER)^(wire_bits)</code>; longer or fragmented frames fail exponentially more often at low SNR.</li>
+            <li><strong>Max Sustainable Hz</strong> — highest steady-state rate before offered wire bps exceeds 100% of protocol goodput.</li>
+          </ul>
+        </details>
+
+        <div class="bench-visuals-group">
+          <hr class="bench-divider" />
+
+          <div class="hero-grid">
+            <div class="visual-card">
+              <div class="card-header-row">
+                <h3>1. Wire Frame &amp; MTU Anatomy</h3>
+                <div class="card-actions">
+                  <button type="button" id="save-frame-png" class="btn-secondary btn-xs">Save PNG</button>
+                </div>
+              </div>
+              <canvas id="bench-frame-canvas" class="frame-canvas"></canvas>
+              <p id="bench-left-cap" class="caption"></p>
+            </div>
+
+            <div class="visual-card">
+              <div class="card-header-row">
+                <h3>2. JSON vs. Packed Binary Comparison</h3>
+                <div class="card-actions">
+                  <button type="button" id="copy-json-btn" class="btn-secondary btn-xs">Copy JSON</button>
+                </div>
+              </div>
+              <canvas id="bench-encoding-canvas" class="frame-canvas"></canvas>
+              <p id="bench-right-cap" class="caption"></p>
+            </div>
+          </div>
+
+          <div id="bench-compare-row" class="hero-grid compare-row hidden">
+            <div class="visual-card">
+              <canvas id="bench-base-frame-canvas" class="frame-canvas"></canvas>
+              <p id="bench-base-left-cap" class="caption"></p>
+            </div>
+            <div class="visual-card">
+              <canvas id="bench-base-curve-canvas" class="plot-canvas"></canvas>
+              <p id="bench-base-right-cap" class="caption"></p>
+            </div>
+          </div>
+
+          <hr class="bench-divider" />
+
+          <div class="hero-grid">
+            <div class="visual-card">
+              <div class="card-header-row">
+                <h3>Frequency Sweep (Hz vs. Wire Rate)</h3>
+                <div class="card-actions">
+                  <button type="button" id="copy-sweep-csv" class="btn-secondary btn-xs">Copy CSV</button>
+                  <button type="button" id="save-sweep-png" class="btn-secondary btn-xs">Save PNG</button>
+                </div>
+              </div>
+              <canvas id="plot-sweep-canvas" class="plot-canvas"></canvas>
+              <div class="plot-footer">
+                <span id="plot-sweep-readout" class="plot-readout mono">Hover chart to inspect Hz vs. wire bps</span>
+              </div>
+              <p class="caption">Blue = required wire bps; Green = protocol goodput; Amber = Shannon limit.</p>
+            </div>
+
+            <div class="visual-card">
+              <div class="card-header-row">
+                <h3>SNR Waterfall (dB vs. BER Loss %)</h3>
+                <div class="card-actions">
+                  <button type="button" id="copy-snr-csv" class="btn-secondary btn-xs">Copy CSV</button>
+                  <button type="button" id="save-snr-png" class="btn-secondary btn-xs">Save PNG</button>
+                </div>
+              </div>
+              <canvas id="plot-snr-canvas" class="plot-canvas"></canvas>
+              <div class="plot-footer">
+                <span id="plot-snr-readout" class="plot-readout mono">Hover chart to inspect SNR vs. BER packet loss</span>
+              </div>
+              <p class="caption">Computed via Rust WASM <code>evaluate_custom_json</code> across -25 to +35 dB.</p>
+            </div>
+          </div>
+
+          <div class="visual-card" style="margin-top:14px;">
+            <div class="card-header-row">
+              <h3>Raw WASM Budget Output</h3>
+              <span class="hint-text">Deterministic JSON matching <code>linkguard budget --format json</code></span>
+            </div>
+            <pre id="bench-json-details" class="json-box mono"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- PINNED SNAPSHOTS TABLE -->
+      <section id="snapshots-section" class="snapshots-section hidden">
+        <hr />
+        <div class="snapshots-header">
+          <h3 id="snapshots-title">Pinned Snapshots (0)</h3>
+          <button type="button" id="download-csv-btn" class="btn-secondary">Download CSV</button>
+        </div>
+        <div class="table-wrap">
+          <table id="snapshots-table">
+            <thead>
+              <tr>
+                <th>Snapshot</th>
+                <th>Link</th>
+                <th>Encoding</th>
+                <th>Payload B</th>
+                <th>Hz</th>
+                <th>Wire bps</th>
+                <th>Util %</th>
+                <th>Frags</th>
+                <th>Header Tax</th>
+                <th>BER Loss</th>
+                <th>Airtime ms</th>
+                <th>Max Hz</th>
+                <th>Verdict</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
   </div>
 
-  <div id="verdict" class="badge">Loading WASM...</div>
-  <div id="stats" class="grid"></div>
-
-  <script type="module">
-    import init, { list_profiles_json, evaluate_payload_json } from "./pkg/linkguard_wasm.js";
-
-    await init();
-    const profiles = JSON.parse(list_profiles_json());
-    const sel = document.getElementById("profile");
-    for (const p of profiles) {
-      const opt = document.createElement("option");
-      opt.value = p.id;
-      opt.textContent = `${p.name} (MTU ${p.max_payload_bytes}B, ${p.effective_goodput_bps} bps)`;
-      sel.appendChild(opt);
-    }
-
-    function render() {
-      const pid = sel.value;
-      const bytes = Math.max(1, parseInt(document.getElementById("bytes").value || "1", 10));
-      const hz = Math.max(0.01, parseFloat(document.getElementById("hz").value || "1"));
-      const r = JSON.parse(evaluate_payload_json(pid, bytes, hz));
-
-      const v = document.getElementById("verdict");
-      const kind = r.verdict.startsWith("PASS") ? "PASS" : r.verdict.startsWith("WARN") ? "WARN" : "FAIL";
-      v.className = `badge ${kind}`;
-      v.textContent = r.verdict;
-
-      const items = [
-        ["Required Wire Rate", `${r.required_wire_bps} bps`],
-        ["Effective Goodput", `${r.effective_goodput_bps} bps`],
-        ["Shannon Ceiling", `${r.shannon_ceiling_bps} bps`],
-        ["Utilization", `${r.utilization_pct}%`],
-        ["MTU Fragments", `${r.fragments_per_message} (${r.wire_bytes_per_message} B wire)`],
-        ["Packet Loss (BER)", `${r.packet_loss_prob_pct}%`],
-        ["Header Tax", `${r.header_overhead_pct}%`],
-        ["Airtime / msg", `${r.airtime_ms_per_message} ms`],
-        ["Max Sustainable Hz", `${r.max_sustainable_hz} Hz`],
-      ];
-      document.getElementById("stats").innerHTML = items
-        .map(([k, val]) => `<div class="stat"><small>${k}</small><strong>${val}</strong></div>`)
-        .join("");
-    }
-
-    window.setScenario = (pid, b, hz) => {
-      sel.value = pid;
-      document.getElementById("bytes").value = b;
-      document.getElementById("hz").value = hz;
-      render();
-    };
-    sel.addEventListener("change", render);
-    document.getElementById("bytes").addEventListener("input", render);
-    document.getElementById("hz").addEventListener("input", render);
-    render();
-  </script>
+  <script type="module" src="./sandbox.js?v=1"></script>
 </body>
 </html>
