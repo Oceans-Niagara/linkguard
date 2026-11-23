@@ -4,8 +4,8 @@
 
 LinkGuard is an offline-first Rust CLI, MCP server, and seeded packet proxy developed by [Oceans Niagara, LLC](https://oceansniagara.com), which analyzes transport code against physical-layer limits without LLM dependencies.
 
-- **Website & Docs:** https://oceansniagara.comlinkguard/
-- **Interactive WASM Sandbox:** https://oceansniagara.comlinkguard/sandbox.html
+- **Website & Docs:** https://oceansniagara.com/linkguard/
+- **Interactive WASM Sandbox:** https://oceansniagara.com/linkguard/sandbox.html
 
 ## Install & Run Locally
 
