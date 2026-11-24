@@ -1,0 +1,18 @@
+﻿[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Unlicense", "LicenseRef-Proprietary",
+]
+
+# Clarify that your own local crate uses your custom LICENSE file
+[[licenses.clarify]]
+name = "linkguard"
+expression = "LicenseRef-Proprietary"
+license-files = [
+    { path = "LICENSE", hash = 0x6835ce24 }
+]
