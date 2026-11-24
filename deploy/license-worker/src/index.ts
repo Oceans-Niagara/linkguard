@@ -163,6 +163,8 @@ async function sendLicenseEmail(
         `Thanks for purchasing LinkGuard ${tier.toUpperCase()}!\n\n` +
         `Your offline Ed25519 license key (v0.3 lifetime):\n\n` +
         `${token}\n\n` +
+        `Download LinkGuard (Windows, macOS, Linux — GUI included):\n` +
+        `  https://github.com/oceans-niagara/linkguard/releases\n\n` +
         `How to activate (100% offline, zero network calls):\n` +
         `  Option A: Save the key above to a file named linkguard.lic in your project folder\n` +
         `  Option B: Set environment variable LINKGUARD_LICENSE="<key>"\n\n` +
